@@ -6,7 +6,7 @@ const state = {
   cashSession: JSON.parse(localStorage.getItem('cafeteria_cash_session') || 'null'),
   users: JSON.parse(localStorage.getItem('cafeteria_users') || '[]'),
   currentUser: JSON.parse(localStorage.getItem('cafeteria_current_user') || 'null'),
-  settings: JSON.parse(localStorage.getItem('cafeteria_settings') || '{"title1":"Mi Cafetería","title2":"Pantalla principal","posTitle":"POS Cafetería","posSubtitle":"Ventas, productos, deudas, cierres y resumen diario.","logoDataUrl":"","accentColor":"#1f7a5c","bgColor":"#f7f7fb","cardColor":"#ffffff","logoSize":120,"title1Size":32,"title2Size":16,"title1Font":"Inter, system-ui, sans-serif","title2Font":"Inter, system-ui, sans-serif","title1Color":"#1d2530","title2Color":"#6f7a86","ordersEnabled":true}'),
+  settings: JSON.parse(localStorage.getItem('cafeteria_settings') || '{"title1":"Mi Cafetería","title2":"Pantalla principal","posTitle":"POS Cafetería","posSubtitle":"Ventas, productos, deudas, cierres y resumen diario.","logoDataUrl":"","accentColor":"#1f7a5c","bgColor":"#f7f7fb","cardColor":"#ffffff","logoSize":120,"title1Size":32,"title2Size":16,"title1Font":"Inter, system-ui, sans-serif","title2Font":"Inter, system-ui, sans-serif","title1Color":"#1d2530","title2Color":"#6f7a86","posLogoSize":56,"ordersEnabled":true}'),
   categories: JSON.parse(localStorage.getItem('cafeteria_categories') || '[]'),
   people: JSON.parse(localStorage.getItem('cafeteria_people') || '[]'),
   stockConfig: JSON.parse(localStorage.getItem('cafeteria_stock_config') || '{"enabled":false,"min":0}')
@@ -31,6 +31,7 @@ const goSalesBtn = $('goSalesBtn');
 const startCashBtn = $('startCashBtn');
 const closeCashBtn = $('closeCashBtn');
 const goCashClosingsBtn = $('goCashClosingsBtn');
+const goWarehouseBtn = $('goWarehouseBtn');
 const openSettingsBtn = $('openSettingsBtn');
 const startCashCard = $('startCashCard');
 const confirmStartCash = $('confirmStartCash');
@@ -45,6 +46,7 @@ const businessName = $('businessName');
 const homeSubtitle = $('homeSubtitle');
 const posTitle = $('posTitle');
 const posSubtitle = $('posSubtitle');
+const posHeaderLogo = $('posHeaderLogo');
 const title1Input = $('title1Input');
 const title2Input = $('title2Input');
 const posTitleInput = $('posTitleInput');
@@ -52,6 +54,7 @@ const posSubtitleInput = $('posSubtitleInput');
 const logoInput = $('logoInput');
 const saveSettingsBtn = $('saveSettingsBtn');
 const logoSizeInput = $('logoSizeInput');
+const posLogoSizeInput = $('posLogoSizeInput');
 const title1SizeInput = $('title1SizeInput');
 const title2SizeInput = $('title2SizeInput');
 const title1FontInput = $('title1FontInput');
@@ -75,6 +78,23 @@ const stockPageImportBtn = $('stockPageImportBtn');
 const stockPageExportBtn = $('stockPageExportBtn');
 const stockPageImportFileInput = $('stockPageImportFileInput');
 const clearAllStockBtn = $('clearAllStockBtn');
+const warehouseScreen = $('warehouseScreen');
+const backFromWarehouseBtn = $('backFromWarehouseBtn');
+const warehouseStatus = $('warehouseStatus');
+const componentNameInput = $('componentNameInput');
+const componentMinInput = $('componentMinInput');
+const createComponentBtn = $('createComponentBtn');
+const warehouseProductSelect = $('warehouseProductSelect');
+const warehouseComponentSelect = $('warehouseComponentSelect');
+const warehouseLinkQtyInput = $('warehouseLinkQtyInput');
+const linkComponentBtn = $('linkComponentBtn');
+const warehouseMoveComponentSelect = $('warehouseMoveComponentSelect');
+const warehouseMoveQtyInput = $('warehouseMoveQtyInput');
+const warehouseMoveDescInput = $('warehouseMoveDescInput');
+const warehouseAddPurchaseBtn = $('warehouseAddPurchaseBtn');
+const warehouseAddWasteBtn = $('warehouseAddWasteBtn');
+const warehouseTable = $('warehouseTable');
+const warehouseMovesTable = $('warehouseMovesTable');
 const tabs = document.querySelectorAll('.tab');
 const panels = document.querySelectorAll('.panel');
 const createSaleBtn = $('createSale');
@@ -275,6 +295,9 @@ state.forceLogoutAt = Number(localStorage.getItem('cafeteria_force_logout_at') |
 state.cashBoxes = JSON.parse(localStorage.getItem('cafeteria_cash_boxes') || '[]');
 state.selectedClosingIds = [];
 state.generatedClosingsStats = null;
+state.components = JSON.parse(localStorage.getItem('cafeteria_components') || '[]');
+state.componentLinks = JSON.parse(localStorage.getItem('cafeteria_component_links') || '{}');
+state.componentMoves = JSON.parse(localStorage.getItem('cafeteria_component_moves') || '[]');
 
 let appConfig = {
   stockActivo: Boolean(state.stockConfig?.enabled),
@@ -369,6 +392,9 @@ function saveLocalState() {
   localStorage.setItem('cafeteria_stock_config', JSON.stringify(state.stockConfig));
   localStorage.setItem('cafeteria_outflows', JSON.stringify(state.outflows));
   localStorage.setItem('cafeteria_debt_payments', JSON.stringify(state.debtPayments));
+  localStorage.setItem('cafeteria_components', JSON.stringify(state.components || []));
+  localStorage.setItem('cafeteria_component_links', JSON.stringify(state.componentLinks || {}));
+  localStorage.setItem('cafeteria_component_moves', JSON.stringify(state.componentMoves || []));
 }
 
 function persist(options = {}) {
@@ -378,7 +404,7 @@ function persist(options = {}) {
 }
 
 function defaultPermissions() {
-  return { closeCash: true, deleteSales: true, accessSettings: true, manageProducts: true, manageCombos: true, editProductPrices: true, viewOrders: true, deleteClosings: true, deleteCashMovements: true, clearDeletedSalesHistory: true, manageUsers: true, viewSalesButton: true, viewSettingsButton: true, viewCloseCashButton: true, viewProductsTab: true, viewConfigVentasTab: true, viewDebtorsTab: true, viewSummaryTab: true, viewClosingsTab: true };
+  return { closeCash: true, deleteSales: true, accessSettings: true, manageProducts: true, manageCombos: true, editProductPrices: true, viewOrders: true, deleteClosings: true, deleteCashMovements: true, clearDeletedSalesHistory: true, manageUsers: true, viewSalesButton: true, viewSettingsButton: true, viewCloseCashButton: true, viewProductsTab: true, viewConfigVentasTab: true, viewDebtorsTab: true, viewSummaryTab: true, viewClosingsTab: true, viewWarehouseButton: true };
 }
 
 function ensureUsers() {
@@ -545,7 +571,11 @@ function renderSaleSelectors() {
     b.addEventListener('click', () => { activeSaleCategory = c; renderSaleSelectors(); });
     saleCategoryButtons.appendChild(b);
   });
-  const list = activeSaleCategory ? state.products.filter((p) => !p.hidden && p.category === activeSaleCategory) : [];
+  const list = activeSaleCategory ? state.products.filter((p) => {
+    if (p.hidden || p.category !== activeSaleCategory) return false;
+    if (!isStockEnabled()) return true;
+    return Number(p.stockCurrent || 0) > 0;
+  }) : [];
   saleCategorySelectors.innerHTML = `<div class="card grid4"><label>Producto<select id="catProductSel"><option value="">Selecciona un producto</option>${list.map((p) => { const stock = Number(p.stockCurrent || 0); const noStock = isStockEnabled() && stock <= 0; const lowStock = isStockEnabled() && stock > 0 && stock <= Number(appConfig.stockMinimo || 0); const suffix = isStockEnabled() ? (noStock ? ' (Sin stock)' : (lowStock ? ` (Stock = ${stock})` : '')) : ''; const style = isStockEnabled() ? (noStock ? 'color:#c62f2f;' : (lowStock ? 'color:#b26a00;' : '')) : ''; return `<option value="${p.id}" ${noStock ? 'disabled' : ''} style="${style}">${p.name}${suffix} · ${money(p.price)}</option>`; }).join('')}</select></label><label>Cantidad<input id="catQty" type="number" min="1" step="1" value="1" /></label><label>Subtotal<input id="catSub" type="text" readonly value="${money(0)}" /></label><button id="catAdd" class="primary" type="button">Añadir</button></div>`;
   const sel = $('catProductSel');
   const qty = $('catQty');
@@ -632,11 +662,13 @@ function applySettings() {
   if (businessName) businessName.style.color = state.settings.title1Color || '#1d2530';
   if (homeSubtitle) homeSubtitle.style.color = state.settings.title2Color || '#6f7a86';
   if (homeLogo && state.settings.logoSize) homeLogo.style.width = `${Number(state.settings.logoSize || 120)}px`;
+  if (posHeaderLogo) posHeaderLogo.style.width = `${Number(state.settings.posLogoSize || 56)}px`;
   if (title1Input) title1Input.value = state.settings.title1 || '';
   if (title2Input) title2Input.value = state.settings.title2 || '';
   if (posTitleInput) posTitleInput.value = state.settings.posTitle || '';
   if (posSubtitleInput) posSubtitleInput.value = state.settings.posSubtitle || '';
   if (logoSizeInput) logoSizeInput.value = String(Number(state.settings.logoSize || 120));
+  if (posLogoSizeInput) posLogoSizeInput.value = String(Number(state.settings.posLogoSize || 56));
   if (title1SizeInput) title1SizeInput.value = String(Number(state.settings.title1Size || 32));
   if (title2SizeInput) title2SizeInput.value = String(Number(state.settings.title2Size || 16));
   if (title1FontInput) title1FontInput.value = state.settings.title1Font || 'Inter, system-ui, sans-serif';
@@ -654,6 +686,10 @@ function applySettings() {
     homeLogo.src = state.settings.logoDataUrl;
     homeLogo.classList.remove('hidden');
     logoPlaceholder.classList.add('hidden');
+  }
+  if (state.settings.logoDataUrl && posHeaderLogo) {
+    posHeaderLogo.src = state.settings.logoDataUrl;
+    posHeaderLogo.classList.remove('hidden');
   }
 }
 
@@ -910,7 +946,31 @@ function buildStatsFromSelectedClosings() {
 function renderClosingsStatsOutput(stats) {
   const out = document.getElementById('closingsStatsOutput');
   if (!out) return;
-  out.innerHTML = `<div class="card"><h4>Resumen general</h4><p>Total ventas: ${stats.salesCount}</p><p>Total ingresos: ${money(stats.totalIncome)}</p><p>Total efectivo: ${money(stats.cash)}</p><p>Total transferencias: ${money(stats.transfer)}</p><p>Total QR: ${money(stats.qr)}</p><p>Total gastos: ${money(stats.expenses)}</p><p>Ticket promedio global: ${money(stats.avgTicket)}</p><p>Total productos vendidos: ${stats.productsTotalQty}</p><p>Cierres seleccionados: ${stats.count}</p></div><div class="card"><h4>Productos</h4><p>Producto más vendido: ${stats.productsTopQty ? `${stats.productsTopQty.name} (${stats.productsTopQty.qty})` : '-'}</p><p>Producto que más dinero generó: ${stats.productsTopAmount ? `${stats.productsTopAmount.name} (${money(stats.productsTopAmount.total)})` : '-'}</p><p>Total productos distintos vendidos: ${stats.products.length}</p><table><thead><tr><th>Top 5 productos</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${stats.top5.map((p)=>`<tr><td>${p.name}</td><td>${p.qty}</td><td>${money(p.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Métodos de pago</h4><p>Efectivo: ${money(stats.cash)} (${stats.paymentPct.cash.toFixed(1)}%)</p><p>Transferencia: ${money(stats.transfer)} (${stats.paymentPct.transfer.toFixed(1)}%)</p><p>QR: ${money(stats.qr)} (${stats.paymentPct.qr.toFixed(1)}%)</p><p>Otros: ${money(stats.others)} (${stats.paymentPct.others.toFixed(1)}%)</p><p>Método más utilizado: ${stats.mostUsedMethod}</p></div><div class="card"><h4>Usuarios</h4><table><thead><tr><th>Usuario</th><th>Cierres</th><th>Total generado</th></tr></thead><tbody>${stats.users.map((u)=>`<tr><td>${u.user}</td><td>${u.closings}</td><td>${money(u.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div>`;
+  out.innerHTML = `<div class="card"><h4>Resumen general</h4><p>Total ventas: ${stats.salesCount}</p><p>Total ingresos: ${money(stats.totalIncome)}</p><p>Total efectivo: ${money(stats.cash)}</p><p>Total transferencias: ${money(stats.transfer)}</p><p>Total QR: ${money(stats.qr)}</p><p>Total gastos: ${money(stats.expenses)}</p><p>Ticket promedio global: ${money(stats.avgTicket)}</p><p>Total productos vendidos: ${stats.productsTotalQty}</p><p>Cierres seleccionados: ${stats.count}</p></div><div class="card"><h4>Productos</h4><p>Producto más vendido: ${stats.productsTopQty ? `${stats.productsTopQty.name} (${stats.productsTopQty.qty})` : '-'}</p><p>Producto que más dinero generó: ${stats.productsTopAmount ? `${stats.productsTopAmount.name} (${money(stats.productsTopAmount.total)})` : '-'}</p><p>Total productos distintos vendidos: ${stats.products.length}</p><table><thead><tr><th>Top 5 productos</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${stats.top5.map((p)=>`<tr><td>${p.name}</td><td>${p.qty}</td><td>${money(p.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Métodos de pago</h4><p>Efectivo: ${money(stats.cash)} (${stats.paymentPct.cash.toFixed(1)}%)</p><p>Transferencia: ${money(stats.transfer)} (${stats.paymentPct.transfer.toFixed(1)}%)</p><p>QR: ${money(stats.qr)} (${stats.paymentPct.qr.toFixed(1)}%)</p><p>Otros: ${money(stats.others)} (${stats.paymentPct.others.toFixed(1)}%)</p><p>Método más utilizado: ${stats.mostUsedMethod}</p></div><div class="card"><h4>Usuarios</h4><table><thead><tr><th>Usuario</th><th>Cierres</th><th>Total generado</th></tr></thead><tbody>${stats.users.map((u)=>`<tr><td>${u.user}</td><td>${u.closings}</td><td>${money(u.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Estadísticas gráficas comparativas</h4><canvas id="closingsIncomeChart" width="760" height="220"></canvas><canvas id="closingsProductsChart" width="760" height="220"></canvas></div>`;
+  const drawBars = (canvasId, labels, values, color='#1f7a5c') => {
+    const cv = document.getElementById(canvasId);
+    if (!cv || !cv.getContext) return;
+    const ctx = cv.getContext('2d');
+    const w = cv.width;
+    const h = cv.height;
+    ctx.clearRect(0, 0, w, h);
+    if (!values.length) return;
+    const max = Math.max(...values, 1);
+    const bw = Math.max(20, Math.floor((w - 40) / values.length) - 8);
+    values.forEach((v, i) => {
+      const x = 24 + i * (bw + 8);
+      const bh = Math.max(2, Math.round((v / max) * (h - 55)));
+      const y = h - 30 - bh;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, bw, bh);
+      ctx.fillStyle = '#344054';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(String(labels[i] || ''), x, h - 12);
+    });
+  };
+  const closings = (stats.selected || []).slice().sort((a, b) => new Date(a.closedAt) - new Date(b.closedAt));
+  drawBars('closingsIncomeChart', closings.map((c, i) => `C${i + 1}`), closings.map((c) => Number(c.cashIn || 0) + Number(c.qrIn || 0)), '#1570ef');
+  drawBars('closingsProductsChart', (stats.top5 || []).map((p) => p.name), (stats.top5 || []).map((p) => Number(p.qty || 0)), '#1f7a5c');
 }
 
 async function downloadClosingsStatsPdf() {
@@ -1234,6 +1294,77 @@ function comboComponentRequirements(product, qty = 1) {
     req.set(id, (req.get(id) || 0) + Number(qty || 0));
   });
   return req;
+}
+
+function normalizeWarehouseData() {
+  if (!Array.isArray(state.components)) state.components = [];
+  if (!state.componentLinks || typeof state.componentLinks !== 'object') state.componentLinks = {};
+  if (!Array.isArray(state.componentMoves)) state.componentMoves = [];
+}
+
+function componentById(id) {
+  return (state.components || []).find((c) => c.id === id) || null;
+}
+
+function productComponentLinks(productId) {
+  const links = state.componentLinks?.[productId] || [];
+  return Array.isArray(links) ? links : [];
+}
+
+function registerComponentMove({ componentId, tipo, cantidad, descripcion = '' }) {
+  const component = componentById(componentId);
+  if (!component) return;
+  component.qty = Number(component.qty || 0) + Number(cantidad || 0);
+  state.componentMoves.unshift({
+    id: uid(),
+    componentId,
+    componentName: component.name,
+    tipo,
+    cantidad: Number(cantidad || 0),
+    fecha: new Date().toISOString(),
+    usuario: state.currentUser?.username || '-',
+    descripcion
+  });
+}
+
+function applyWarehouseImpactFromSaleItems(items = [], { reverse = false, saleId = '' } = {}) {
+  (items || []).forEach((it) => {
+    const links = productComponentLinks(it.id);
+    links.forEach((ln) => {
+      const qty = Number(ln.qty || 0) * Number(it.qty || 0);
+      if (!qty) return;
+      registerComponentMove({
+        componentId: ln.componentId,
+        tipo: reverse ? 'reverso_venta' : 'venta',
+        cantidad: reverse ? qty : -qty,
+        descripcion: reverse ? `Reverso venta ${saleId || ''}` : `Venta ${saleId || ''}`
+      });
+    });
+  });
+}
+
+function renderWarehouse() {
+  if (!warehouseTable) return;
+  normalizeWarehouseData();
+  const canView = hasPermission('viewWarehouseButton');
+  if (!canView) {
+    warehouseStatus && (warehouseStatus.textContent = 'No tienes permiso para ver Almacén.');
+    homeScreen?.classList.remove('hidden');
+    warehouseScreen?.classList.add('hidden');
+    return;
+  }
+  if (warehouseProductSelect) warehouseProductSelect.innerHTML = (state.products || []).map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
+  const compOpts = (state.components || []).map((c) => `<option value="${c.id}">${c.name}</option>`).join('');
+  if (warehouseComponentSelect) warehouseComponentSelect.innerHTML = compOpts;
+  if (warehouseMoveComponentSelect) warehouseMoveComponentSelect.innerHTML = compOpts;
+  const rows = (state.components || []).map((c) => {
+    const linked = Object.entries(state.componentLinks || {}).flatMap(([pid, arr]) => (arr || []).filter((x) => x.componentId === c.id).map((x) => ({ pid, qty: x.qty })));
+    const linkedNames = linked.map((x) => `${state.products.find((p) => p.id === x.pid)?.name || '-'} (${x.qty})`).join(', ') || '-';
+    const low = Number(c.qty || 0) <= Number(c.min || 0);
+    return { html: `<tr class="${low ? 'selected-row' : ''}"><td>${c.name}</td><td>${linkedNames}</td><td>${linked.map((x) => x.qty).join(', ') || '-'}</td><td>${Number(c.qty || 0)}</td><td><button class="secondary" data-comp-edit="${c.id}" type="button">Editar</button> <button class="secondary" data-comp-del="${c.id}" type="button">Eliminar</button></td></tr>`, low };
+  }).sort((a, b) => Number(b.low) - Number(a.low));
+  warehouseTable.innerHTML = rows.length ? rows.map((x) => x.html).join('') : '<tr><td colspan="5">Sin componentes.</td></tr>';
+  if (warehouseMovesTable) warehouseMovesTable.innerHTML = (state.componentMoves || []).slice(0, 300).map((m) => `<tr><td>${new Date(m.fecha).toLocaleString()}</td><td>${m.componentName || '-'}</td><td>${m.tipo}</td><td>${Number(m.cantidad || 0)}</td><td>${m.usuario || '-'}</td><td>${m.descripcion || '-'}</td></tr>`).join('') || '<tr><td colspan="6">Sin movimientos.</td></tr>';
 }
 
 function exportProductsToExcel() {
@@ -1714,16 +1845,102 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
 
 function renderDebtPayments() {
   if (!debtPaymentsTable) return;
-  const debtPaymentsHead = debtPaymentsTable.closest('table')?.querySelector('thead tr');
-  if (debtPaymentsHead) {
-    debtPaymentsHead.innerHTML = '<th>Fecha de la venta</th><th>Fecha del pago</th><th>Detalle de la compra</th><th>Total pagado</th><th>Usuario que realizó el cobro</th>';
+  state.debtPaymentsView = state.debtPaymentsView || 'history';
+  state.activeDebtorPaymentsId = state.activeDebtorPaymentsId || '';
+  if (debtPaymentsHistoryCard && !document.getElementById('debtPaymentsNav')) {
+    const nav = document.createElement('div');
+    nav.id = 'debtPaymentsNav';
+    nav.className = 'grid3';
+    nav.innerHTML = '<button id="debtViewHistoryBtn" class="secondary" type="button">Historial de pagos</button><button id="debtViewByDebtorBtn" class="secondary" type="button">Pago por deudores</button><button id="debtViewArchivedBtn" class="secondary" type="button">Archivados</button>';
+    debtPaymentsHistoryCard.insertBefore(nav, debtPaymentsHistoryCard.firstChild);
+    document.getElementById('debtViewHistoryBtn')?.addEventListener('click', () => { state.debtPaymentsView = 'history'; state.activeDebtorPaymentsId = ''; renderDebtPayments(); });
+    document.getElementById('debtViewByDebtorBtn')?.addEventListener('click', () => { state.debtPaymentsView = 'byDebtor'; state.activeDebtorPaymentsId = ''; renderDebtPayments(); });
+    document.getElementById('debtViewArchivedBtn')?.addEventListener('click', () => { state.debtPaymentsView = 'archived'; state.activeDebtorPaymentsId = ''; renderDebtPayments(); });
   }
+  const debtPaymentsHead = debtPaymentsTable.closest('table')?.querySelector('thead tr');
+
   const from = debtPaymentsFromDate?.value || '';
   const to = debtPaymentsToDate?.value || '';
   let list = state.debtPayments.slice().sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
+  const activeList = list.filter((p) => !p.archivado);
+  const archivedList = list.filter((p) => p.archivado);
   if (from) list = list.filter((p) => (p.paidAt || '').slice(0, 10) >= from);
   if (to) list = list.filter((p) => (p.paidAt || '').slice(0, 10) <= to);
-  debtPaymentsTable.innerHTML = list.length ? list.map((p) => {
+
+  if (state.debtPaymentsView === 'archived') {
+    if (debtPaymentsHead) debtPaymentsHead.innerHTML = '<th>Deudor</th><th>Fecha pago</th><th>Detalle compra</th><th>Total pagado</th><th>Usuario</th>';
+    const filtered = archivedList.filter((p) => (!from || (p.paidAt || '').slice(0, 10) >= from) && (!to || (p.paidAt || '').slice(0, 10) <= to));
+    debtPaymentsTable.innerHTML = filtered.length ? filtered.map((p) => {
+      const sale = state.sales.find((x) => x.id === p.saleId);
+      const person = state.people.find((x) => x.id === p.debtorId);
+      return `<tr><td>${personFullName(person) || '-'}</td><td>${new Date(p.paidAt).toLocaleString()}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${money(p.amount)}</td><td>${p.paidBy || '-'}</td></tr>`;
+    }).join('') : '<tr><td colspan="5">Sin pagos archivados.</td></tr>';
+    return;
+  }
+
+  if (state.debtPaymentsView === 'byDebtor' && !state.activeDebtorPaymentsId) {
+    if (debtPaymentsHead) debtPaymentsHead.innerHTML = '<th>Deudor</th><th>Total pagado</th><th>Registros</th><th>Acción</th>';
+    const grouped = new Map();
+    activeList.forEach((p) => {
+      const k = p.debtorId || '-';
+      if (!grouped.has(k)) grouped.set(k, []);
+      grouped.get(k).push(p);
+    });
+    debtPaymentsTable.innerHTML = [...grouped.entries()].length ? [...grouped.entries()].map(([debtorId, items]) => {
+      const person = state.people.find((x) => x.id === debtorId);
+      const total = items.reduce((a, x) => a + Number(x.amount || 0), 0);
+      return `<tr><td>${personFullName(person) || 'Sin nombre'}</td><td>${money(total)}</td><td>${items.length}</td><td><button class="secondary" data-debtor-pay-details="${debtorId}" type="button">Ver detalles</button></td></tr>`;
+    }).join('') : '<tr><td colspan="4">Sin pagos por deudores.</td></tr>';
+    debtPaymentsTable.onclick = (e) => {
+      const btn = e.target.closest('button[data-debtor-pay-details]');
+      if (!btn) return;
+      state.activeDebtorPaymentsId = btn.dataset.debtorPayDetails || '';
+      renderDebtPayments();
+    };
+    return;
+  }
+
+  if (state.debtPaymentsView === 'byDebtor' && state.activeDebtorPaymentsId) {
+    if (debtPaymentsHead) debtPaymentsHead.innerHTML = '<th>Fecha venta</th><th>Fecha pago</th><th>Detalle compra</th><th>Total pagado</th><th>Usuario cobro</th><th>Acción</th>';
+    const filtered = activeList.filter((p) => p.debtorId === state.activeDebtorPaymentsId);
+    debtPaymentsTable.innerHTML = filtered.length ? filtered.map((p) => {
+      const sale = state.sales.find((x) => x.id === p.saleId);
+      const paidBy = p.paidBy || p.user || '-';
+      const saleDate = p.saleCreatedAt || sale?.createdAt || '';
+      return `<tr><td>${saleDate ? new Date(saleDate).toLocaleString() : '-'}</td><td>${new Date(p.paidAt).toLocaleString()}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${money(p.amount)}</td><td>${paidBy}</td><td><button class="secondary" data-archive-debt-pay="${p.id}" type="button">Archivar</button></td></tr>`;
+    }).join('') : '<tr><td colspan="6">Sin pagos para este deudor.</td></tr>';
+    if (debtPaymentsTable && !document.getElementById('archiveDebtorHistoryBtn')) {
+      const btn = document.createElement('button');
+      btn.id = 'archiveDebtorHistoryBtn';
+      btn.className = 'secondary';
+      btn.type = 'button';
+      btn.textContent = 'Archivar historial del deudor';
+      debtPaymentsTable.closest('table')?.insertAdjacentElement('beforebegin', btn);
+      btn.addEventListener('click', () => {
+        state.debtPayments.forEach((p) => { if (p.debtorId === state.activeDebtorPaymentsId) p.archivado = true; });
+        persist();
+        state.activeDebtorPaymentsId = '';
+        renderDebtPayments();
+      });
+    }
+    debtPaymentsTable.onclick = (e) => {
+      const btn = e.target.closest('button[data-archive-debt-pay]');
+      if (!btn) return;
+      const item = state.debtPayments.find((x) => x.id === btn.dataset.archiveDebtPay);
+      if (!item) return;
+      item.archivado = true;
+      persist();
+      renderDebtPayments();
+    };
+    return;
+  }
+
+  document.getElementById('archiveDebtorHistoryBtn')?.remove();
+  if (debtPaymentsHead) {
+    debtPaymentsHead.innerHTML = '<th>Fecha de la venta</th><th>Fecha del pago</th><th>Detalle de la compra</th><th>Total pagado</th><th>Usuario que realizó el cobro</th>';
+  }
+  const visible = list.filter((p) => !p.archivado);
+  debtPaymentsTable.innerHTML = visible.length ? visible.map((p) => {
     const sale = state.sales.find((x) => x.id === p.saleId);
     const paidBy = p.paidBy || p.user || '-';
     const saleDate = p.saleCreatedAt || sale?.createdAt || '';
@@ -1746,6 +1963,9 @@ function snapshotPayload() {
     stockConfig: state.stockConfig,
     outflows: state.outflows,
     debtPayments: state.debtPayments,
+    components: state.components,
+    componentLinks: state.componentLinks,
+    componentMoves: state.componentMoves,
     cashBoxes: state.cashBoxes,
     activeCashBoxId: state.activeCashBoxId || '',
     systemStatus: state.systemStatus || 'CAJA_CERRADA',
@@ -1803,7 +2023,7 @@ async function pullFromCloud(options = {}) {
     }
     state.lastSyncAt = Number(data.updatedAt || Date.now());
     state.forceLogoutAt = Number(data.forceLogoutAt || 0);
-    ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','cashBoxes','activeCashBoxId','systemStatus'].forEach((k) => {
+    ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus'].forEach((k) => {
       if (data[k] !== undefined) state[k] = data[k];
     });
     normalizeCloudSettings();
@@ -1812,7 +2032,7 @@ async function pullFromCloud(options = {}) {
     console.info('[cloud] estado sincronizado', { activeCashBoxId: state.activeCashBoxId, systemStatus: state.systemStatus });
     saveLocalState();
     renderOrdersVisibility();
-    renderProducts(); renderOrders(false); renderSalesHistory(); renderDeletedSales(); renderDebtors(); renderSummary(); renderCashStatus(); renderHomeActions();
+    renderProducts(); renderOrders(false); renderSalesHistory(); renderDeletedSales(); renderDebtors(); renderDebtPayments(); renderWarehouse(); renderSummary(); renderCashStatus(); renderHomeActions();
     const currentRoute = normalizeRoute(window.location.hash || '#home');
     const inSettingsBranch = currentRoute === 'settings' || currentRoute.startsWith('settings/');
     const inPosBranch = currentRoute.startsWith('pos/') || currentRoute === 'cash/closings';
@@ -1835,6 +2055,7 @@ function renderHomeActions() {
   if (startCashBtn) startCashBtn.classList.toggle('hidden', active || !canStartOrCloseCash());
   if (openSettingsBtn) openSettingsBtn.classList.toggle('hidden', !hasPermission('accessSettings') || !hasPermission('viewSettingsButton'));
   if (goCashClosingsBtn) goCashClosingsBtn.classList.toggle('hidden', !hasPermission('viewClosingsTab'));
+  if (goWarehouseBtn) goWarehouseBtn.classList.toggle('hidden', !hasPermission('viewWarehouseButton'));
   const user = currentUserRecord();
   if (sessionInfo) sessionInfo.textContent = user ? `Usuario activo: ${user.username}` : 'Sin sesión';
   if (posSessionInfo) posSessionInfo.textContent = user ? `Usuario: ${user.username}` : 'Usuario: -';
@@ -1873,6 +2094,8 @@ function showLogin() {
   loginScreen?.classList.remove('hidden');
   homeScreen?.classList.add('hidden');
   posScreen?.classList.add('hidden');
+  stockScreen?.classList.add('hidden');
+  warehouseScreen?.classList.add('hidden');
   if (loginUserInput) loginUserInput.value = '';
   if (loginPassInput) loginPassInput.value = '';
   setMsg(loginMessage, '');
@@ -1882,6 +2105,7 @@ function showHome() {
   homeScreen?.classList.remove('hidden');
   posScreen?.classList.add('hidden');
   stockScreen?.classList.add('hidden');
+  warehouseScreen?.classList.add('hidden');
   settingsCard?.classList.add('hidden');
   renderHomeActions();
   renderTabsByPermissions();
@@ -1923,6 +2147,7 @@ async function handleLogin() {
   renderOrdersVisibility();
   renderHomeActions();
   showHome();
+  renderSalesHistory();
   if (!getActiveCashBox()) setMsg(homeMessage, 'La caja está cerrada. Espera a que un usuario autorizado la abra.', false);
 }
 
@@ -2173,6 +2398,7 @@ async function registerSale() {
       }
     }
   }
+  applyWarehouseImpactFromSaleItems(sale.items, { reverse: false, saleId: `#${orderNumberLabel(sale.orderNumber)}` });
   state.sales.unshift(sale);
   state.currentCart = [];
   persist();
@@ -2182,6 +2408,7 @@ async function registerSale() {
   renderDebtors();
   renderSummary();
   renderSoldProductsList();
+  renderWarehouse();
   if (saleSuccessTitle) saleSuccessTitle.textContent = `Venta realizada exitosamente · Pedido #${orderNumberLabel(sale.orderNumber)}`;
   saleSuccessModal?.classList.remove('hidden');
 }
@@ -2210,6 +2437,21 @@ function showStockPage() {
   renderStockPage();
 }
 
+function showWarehousePage() {
+  if (!hasPermission('viewWarehouseButton')) {
+    showHome();
+    setMsg(homeMessage, 'No tienes permiso para acceder al módulo Almacén.', false);
+    return;
+  }
+  homeScreen?.classList.add('hidden');
+  posScreen?.classList.add('hidden');
+  loginScreen?.classList.add('hidden');
+  stockScreen?.classList.add('hidden');
+  warehouseScreen?.classList.remove('hidden');
+  if (warehouseStatus) warehouseStatus.textContent = 'Gestión de componentes y recetas.';
+  renderWarehouse();
+}
+
 function openSettings() {
   if (!hasPermission('accessSettings')) return setMsg(homeMessage, 'No tienes permiso para configuración.', false);
   settingsCard?.classList.remove('hidden');
@@ -2235,6 +2477,7 @@ function permissionSchema() {
     { key: 'viewSummaryTab', label: 'Puede ver botón Total ventas diarias' },
     { key: 'viewOrders', label: 'Puede ver botón Pedidos' },
     { key: 'viewClosingsTab', label: 'Puede ver botón Cierre de caja' },
+    { key: 'viewWarehouseButton', label: 'Puede ver botón Almacén' },
     { key: 'deleteSales', label: 'Puede eliminar ventas' },
     { key: 'closeCash', label: 'Puede cerrar caja' },
     { key: 'manageProducts', label: 'Puede modificar productos' },
@@ -2300,7 +2543,7 @@ function normalizeRoute(routeLike) {
 function parentRoute(route) {
   if (route === 'home') return 'home';
   if (route === 'settings') return 'home';
-  if (route in { 'settings/main':1, 'settings/sales':1, 'settings/users':1, 'stock':1, 'pos/ventas':1, 'pos/pedidos':1, 'pos/configVentas':1, 'pos/deudas':1, 'pos/resumen':1, 'cash/closings':1 }) return route.startsWith('settings/') ? 'settings' : 'home';
+  if (route in { 'settings/main':1, 'settings/sales':1, 'settings/users':1, 'stock':1, 'warehouse':1, 'pos/ventas':1, 'pos/pedidos':1, 'pos/configVentas':1, 'pos/deudas':1, 'pos/resumen':1, 'cash/closings':1 }) return route.startsWith('settings/') ? 'settings' : 'home';
   if (route.startsWith('settings/users/edit/') || route === 'settings/users/new') return 'settings/users';
   if (route === 'pos/productos') return 'settings';
   if (route in { 'pos/productos-lista':1, 'pos/productos-categorias':1, 'pos/productos-combo':1 }) return 'pos/productos';
@@ -2345,16 +2588,18 @@ function hideAllScreens() {
   homeScreen?.classList.add('hidden');
   posScreen?.classList.add('hidden');
   stockScreen?.classList.add('hidden');
+  warehouseScreen?.classList.add('hidden');
   homeScreen?.classList.remove('settings-mode');
 }
 
 function enforceSingleActiveView(route = normalizeRoute(window.location.hash || '#home')) {
-  const activeScreens = [loginScreen, homeScreen, posScreen, stockScreen].filter((el) => el && !el.classList.contains('hidden'));
+  const activeScreens = [loginScreen, homeScreen, posScreen, stockScreen, warehouseScreen].filter((el) => el && !el.classList.contains('hidden'));
   if (activeScreens.length > 1) {
     console.warn('[nav] múltiples vistas activas detectadas, corrigiendo', activeScreens.map((el) => el.id));
     hideAllScreens();
     if (route === 'home') homeScreen?.classList.remove('hidden');
     else if (route === 'stock') stockScreen?.classList.remove('hidden');
+    else if (route === 'warehouse') warehouseScreen?.classList.remove('hidden');
     else if (route.startsWith('pos/') || route === 'cash/closings') posScreen?.classList.remove('hidden');
     else if (route.startsWith('settings')) {
       homeScreen?.classList.remove('hidden');
@@ -2374,6 +2619,7 @@ function renderRoute(route) {
   if (!state.currentUser) return showLogin();
   if (route === 'home') { showHome(); enforceSingleActiveView(route); return; }
   if (route === 'stock') { showStockPage(); enforceSingleActiveView(route); return; }
+  if (route === 'warehouse') { showWarehousePage(); enforceSingleActiveView(route); return; }
   if (route === 'settings') {
     hideAllScreens();
     homeScreen?.classList.remove('hidden');
@@ -2458,6 +2704,7 @@ function saveMainSettings() {
   state.settings.posTitle = posTitleInput?.value?.trim() || 'POS Cafetería';
   state.settings.posSubtitle = posSubtitleInput?.value?.trim() || 'Ventas, productos, deudas, cierres y resumen diario.';
   state.settings.logoSize = Math.max(60, Number(logoSizeInput?.value || 120));
+  state.settings.posLogoSize = Math.max(30, Number(posLogoSizeInput?.value || 56));
   state.settings.title1Size = Math.max(14, Number(title1SizeInput?.value || 32));
   state.settings.title2Size = Math.max(12, Number(title2SizeInput?.value || 16));
   state.settings.title1Font = title1FontInput?.value || 'Inter, system-ui, sans-serif';
@@ -2662,6 +2909,7 @@ function wireEvents() {
   closeCashBtnCard?.addEventListener('click', closeCashSession);
   goSalesBtn?.addEventListener('click', () => navigateTo('pos/ventas'));
   goCashClosingsBtn?.addEventListener('click', () => navigateTo('cash/closings'));
+  goWarehouseBtn?.addEventListener('click', () => navigateTo('warehouse'));
   backHomeBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
   openSettingsBtn?.addEventListener('click', () => navigateTo('settings'));
   closeSettingsScreenBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
@@ -2938,6 +3186,7 @@ function wireEvents() {
           }
         });
       }
+      applyWarehouseImpactFromSaleItems(sale.items, { reverse: true, saleId: `#${orderNumberLabel(sale.orderNumber)}` });
       state.sales = state.sales.filter((x) => x.id !== sale.id);
       persist();
       renderSalesHistory();
@@ -2945,7 +3194,8 @@ function wireEvents() {
       renderDebtors();
       renderDebtPayments();
       renderSummary();
-  renderSoldProductsList();
+      renderSoldProductsList();
+      renderWarehouse();
       return;
     }
   });
@@ -3001,6 +3251,73 @@ function wireEvents() {
   searchDebtPaymentsBtn?.addEventListener('click', renderDebtPayments);
   clearDebtPaymentsFilterBtn?.addEventListener('click', () => { if (debtPaymentsFromDate) debtPaymentsFromDate.value = ''; if (debtPaymentsToDate) debtPaymentsToDate.value = ''; renderDebtPayments(); });
   backFromStockPageBtn?.addEventListener('click', () => navigateTo(parentRoute(navStack[navStack.length - 1] || 'home'), { replace: true }));
+  backFromWarehouseBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
+  createComponentBtn?.addEventListener('click', () => {
+    const name = (componentNameInput?.value || '').trim();
+    const min = Math.max(0, Number(componentMinInput?.value || 0));
+    if (!name) return;
+    const exists = state.components.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (exists) return;
+    state.components.push({ id: uid(), name, qty: 0, min });
+    if (componentNameInput) componentNameInput.value = '';
+    persist();
+    renderWarehouse();
+  });
+  linkComponentBtn?.addEventListener('click', () => {
+    const productId = warehouseProductSelect?.value || '';
+    const componentId = warehouseComponentSelect?.value || '';
+    const qty = Math.max(0.01, Number(warehouseLinkQtyInput?.value || 1));
+    if (!productId || !componentId) return;
+    if (!Array.isArray(state.componentLinks[productId])) state.componentLinks[productId] = [];
+    const existing = state.componentLinks[productId].find((x) => x.componentId === componentId);
+    if (existing) existing.qty = qty;
+    else state.componentLinks[productId].push({ componentId, qty });
+    persist();
+    renderWarehouse();
+  });
+  warehouseAddPurchaseBtn?.addEventListener('click', () => {
+    const componentId = warehouseMoveComponentSelect?.value || '';
+    const qty = Math.max(0.01, Number(warehouseMoveQtyInput?.value || 0));
+    if (!componentId || !qty) return;
+    registerComponentMove({ componentId, tipo: 'compra', cantidad: qty, descripcion: (warehouseMoveDescInput?.value || '').trim() || 'Compra de almacén' });
+    if (warehouseMoveDescInput) warehouseMoveDescInput.value = '';
+    persist();
+    renderWarehouse();
+  });
+  warehouseAddWasteBtn?.addEventListener('click', () => {
+    const componentId = warehouseMoveComponentSelect?.value || '';
+    const qty = Math.max(0.01, Number(warehouseMoveQtyInput?.value || 0));
+    const desc = (warehouseMoveDescInput?.value || '').trim();
+    if (!componentId || !qty || !desc) return alert('La descripción es obligatoria para desecho.');
+    registerComponentMove({ componentId, tipo: 'desecho', cantidad: -qty, descripcion: desc });
+    if (warehouseMoveDescInput) warehouseMoveDescInput.value = '';
+    persist();
+    renderWarehouse();
+  });
+  warehouseTable?.addEventListener('click', (e) => {
+    const edit = e.target.closest('button[data-comp-edit]');
+    if (edit) {
+      const comp = componentById(edit.dataset.compEdit);
+      if (!comp) return;
+      const newName = prompt('Nombre componente', comp.name);
+      if (!newName) return;
+      const newMin = Number(prompt('Cantidad mínima', String(comp.min || 0)) || comp.min || 0);
+      comp.name = String(newName).trim() || comp.name;
+      comp.min = Math.max(0, Number(newMin || 0));
+      persist();
+      renderWarehouse();
+      return;
+    }
+    const del = e.target.closest('button[data-comp-del]');
+    if (!del) return;
+    const compId = del.dataset.compDel;
+    state.components = state.components.filter((c) => c.id !== compId);
+    Object.keys(state.componentLinks || {}).forEach((pid) => {
+      state.componentLinks[pid] = (state.componentLinks[pid] || []).filter((x) => x.componentId !== compId);
+    });
+    persist();
+    renderWarehouse();
+  });
   stockPageAddBtn?.addEventListener('click', () => {
     const pid = stockPageProductSelect?.value || '';
     const qty = Math.max(1, Number(stockPageAddQtyInput?.value || 1));
@@ -3100,6 +3417,7 @@ async function bootstrap() {
   ensureSeedData();
   ensureProductStockDefaults();
   ensurePeopleData();
+  normalizeWarehouseData();
   normalizeCashState();
   syncAppConfig();
   saveLocalState();
@@ -3117,6 +3435,7 @@ async function bootstrap() {
   renderDebtPayments();
   renderProducts();
   renderOutflows();
+  renderWarehouse();
   renderSummary();
   renderSoldProductsList();
   const validSession = Boolean(state.currentUser && currentUserRecord());
