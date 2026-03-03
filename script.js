@@ -297,15 +297,23 @@ state.activeCashBoxId = localStorage.getItem('cafeteria_active_cash_box_id') || 
 state.systemStatus = localStorage.getItem('cafeteria_system_status') || 'CAJA_CERRADA';
 state.salesHistoryMode = 'all';
 
+const SHARED_DB_PATH = 'cafeteria_shared';
+const LEGACY_DB_PATH = 'cafeteria_BaseDatos2';
 const defaultCloudConfig = {
   firebaseDbUrl: 'https://sh82-d2bf1-default-rtdb.firebaseio.com',
   firebaseDbToken: 'LTQRqLhvxLxBkGi3a9ia2tlTSvDRu0lrxxczVB4e',
-  firebaseDbPath: 'cafeteria_BaseDatos2'
+  firebaseDbPath: SHARED_DB_PATH
 };
-state.settings = { ...defaultCloudConfig, ...(state.settings || {}) };
-if (!String(state.settings.firebaseDbUrl || '').trim()) state.settings.firebaseDbUrl = defaultCloudConfig.firebaseDbUrl;
-if (!String(state.settings.firebaseDbToken || '').trim()) state.settings.firebaseDbToken = defaultCloudConfig.firebaseDbToken;
-if (!String(state.settings.firebaseDbPath || '').trim()) state.settings.firebaseDbPath = defaultCloudConfig.firebaseDbPath;
+
+function normalizeCloudSettings() {
+  state.settings = { ...defaultCloudConfig, ...(state.settings || {}) };
+  if (!String(state.settings.firebaseDbUrl || '').trim()) state.settings.firebaseDbUrl = defaultCloudConfig.firebaseDbUrl;
+  if (!String(state.settings.firebaseDbToken || '').trim()) state.settings.firebaseDbToken = defaultCloudConfig.firebaseDbToken;
+  const currentPath = String(state.settings.firebaseDbPath || '').trim();
+  if (!currentPath || currentPath === LEGACY_DB_PATH) state.settings.firebaseDbPath = SHARED_DB_PATH;
+}
+
+normalizeCloudSettings();
 
 
 function money(v) { return `Bs ${Number(v || 0).toFixed(2)}`; }
@@ -1742,7 +1750,7 @@ async function syncToCloud() {
   if (!state.settings.firebaseDbUrl) return;
   try {
     const token = state.settings.firebaseDbToken ? `?auth=${encodeURIComponent(state.settings.firebaseDbToken)}` : '';
-    const url = `${state.settings.firebaseDbUrl.replace(/\/$/, '')}/${state.settings.firebaseDbPath || 'cafeteria_BaseDatos2'}.json${token}`;
+    const url = `${state.settings.firebaseDbUrl.replace(/\/$/, '')}/${state.settings.firebaseDbPath || SHARED_DB_PATH}.json${token}`;
     await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshotPayload()) });
     if (syncStatus) syncStatus.textContent = 'Sincronización enviada.';
   } catch {
@@ -1754,7 +1762,7 @@ async function pullFromCloud() {
   if (!state.settings.firebaseDbUrl) return;
   try {
     const token = state.settings.firebaseDbToken ? `?auth=${encodeURIComponent(state.settings.firebaseDbToken)}` : '';
-    const url = `${state.settings.firebaseDbUrl.replace(/\/$/, '')}/${state.settings.firebaseDbPath || 'cafeteria_BaseDatos2'}.json${token}`;
+    const url = `${state.settings.firebaseDbUrl.replace(/\/$/, '')}/${state.settings.firebaseDbPath || SHARED_DB_PATH}.json${token}`;
     const r = await fetch(url);
     const data = await r.json();
     if (!data || !data.updatedAt || data.updatedAt <= state.lastSyncAt) return;
@@ -1763,6 +1771,7 @@ async function pullFromCloud() {
     ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','cashBoxes','activeCashBoxId','systemStatus'].forEach((k) => {
       if (data[k] !== undefined) state[k] = data[k];
     });
+    normalizeCloudSettings();
     normalizeCashState();
   syncAppConfig();
     console.info('[cloud] estado sincronizado', { activeCashBoxId: state.activeCashBoxId, systemStatus: state.systemStatus });
@@ -3048,6 +3057,7 @@ function bootstrap() {
   ensurePeopleData();
   normalizeCashState();
   syncAppConfig();
+  normalizeCloudSettings();
   saveLocalState();
   applySettings();
   wireEvents();
