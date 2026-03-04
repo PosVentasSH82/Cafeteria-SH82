@@ -1400,10 +1400,25 @@ function comboComponentRequirements(product, qty = 1) {
   return req;
 }
 
+
+function normalizeDebtPaymentsData() {
+  if (!Array.isArray(state.debtPayments)) state.debtPayments = [];
+  state.debtPayments = state.debtPayments.filter(Boolean).map((p) => ({
+    ...p,
+    saleId: p.saleId || p.ventaId || '',
+    archivado: Boolean(p.archivado),
+    anulado: Boolean(p.anulado),
+    anuladoPorVentaId: p.anuladoPorVentaId || '',
+    anuladoAt: p.anuladoAt || '',
+    anuladoBy: p.anuladoBy || ''
+  }));
+}
+
 function normalizeWarehouseData() {
   if (!Array.isArray(state.components)) state.components = [];
   if (!state.componentLinks || typeof state.componentLinks !== 'object') state.componentLinks = {};
   if (!Array.isArray(state.componentMoves)) state.componentMoves = [];
+  state.componentMoves = state.componentMoves.filter(Boolean).map((m) => ({ ...m, archived: Boolean(m.archived), archivedDate: m.archivedDate || '', tipo: m.tipo === 'venta' ? 'uso' : (m.tipo || 'ajuste_manual') }));
 }
 
 function componentById(id) {
@@ -1439,11 +1454,112 @@ function applyWarehouseImpactFromSaleItems(items = [], { reverse = false, saleId
       if (!qty) return;
       registerComponentMove({
         componentId: ln.componentId,
-        tipo: reverse ? 'reverso_venta' : 'venta',
+        tipo: reverse ? 'reverso_venta' : 'uso',
         cantidad: reverse ? qty : -qty,
         descripcion: reverse ? `Reverso venta ${saleId || ''}` : `Venta ${saleId || ''}`
       });
     });
+  });
+}
+
+
+function warehouseMoveDateKey(move) {
+  return String(move?.fecha || '').slice(0, 10);
+}
+
+function openWarehouseNewTab(route = 'warehouse/gestion') {
+  const base = `${window.location.origin}${window.location.pathname}`;
+  window.open(`${base}#${normalizeRoute(route)}`, '_blank');
+}
+
+function renderWarehouseMovesSection(route = 'warehouse') {
+  if (!warehouseMovesTable) return;
+  const card = warehouseMovesTable.closest('.card');
+  const activeMoves = (state.componentMoves || []).filter((m) => m && !m.archived);
+  const archivedMoves = (state.componentMoves || []).filter((m) => m && m.archived);
+  const currentRoute = normalizeRoute(route);
+
+  if (card && !document.getElementById('warehouseMovesHeaderActions')) {
+    const actions = document.createElement('div');
+    actions.id = 'warehouseMovesHeaderActions';
+    actions.className = 'grid3';
+    actions.innerHTML = '<button id="warehouseActiveMovesBtn" class="secondary" type="button">Movimientos</button><button id="warehouseArchivedMovesBtn" class="secondary" type="button">Archivados</button><button id="warehouseArchiveTodayBtn" class="secondary" type="button">Archivar día actual</button>';
+    card.insertBefore(actions, card.querySelector('table'));
+    document.getElementById('warehouseActiveMovesBtn')?.addEventListener('click', () => navigateTo('warehouse/movimientos', { replace: true }));
+    document.getElementById('warehouseArchivedMovesBtn')?.addEventListener('click', () => navigateTo('warehouse/movimientos/archivados', { replace: true }));
+    document.getElementById('warehouseArchiveTodayBtn')?.addEventListener('click', () => {
+      const today = new Date().toISOString().slice(0, 10);
+      let count = 0;
+      (state.componentMoves || []).forEach((m) => {
+        if (!m || m.archived) return;
+        if (warehouseMoveDateKey(m) !== today) return;
+        m.archived = true;
+        m.archivedDate = today;
+        count += 1;
+      });
+      persist();
+      renderWarehouse();
+      if (warehouseStatus) warehouseStatus.textContent = count ? `Se archivaron ${count} movimientos del día ${today}.` : 'No hay movimientos activos del día actual para archivar.';
+    });
+  }
+
+  if (currentRoute === 'warehouse/movimientos/archivados') {
+    const grouped = new Map();
+    archivedMoves.forEach((m) => {
+      const key = m.archivedDate || warehouseMoveDateKey(m);
+      grouped.set(key, (grouped.get(key) || 0) + 1);
+    });
+    const rows = [...grouped.entries()].sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+    const thead = warehouseMovesTable.closest('table')?.querySelector('thead tr');
+    if (thead) thead.innerHTML = '<th>Fecha</th><th>Total movimientos</th><th>Acción</th>';
+    warehouseMovesTable.innerHTML = rows.length ? rows.map(([day, qty]) => `<tr><td>${day}</td><td>${qty}</td><td><button class="secondary" data-wh-arch-day="${day}" type="button">Ver detalles</button></td></tr>`).join('') : '<tr><td colspan="3">Sin movimientos archivados.</td></tr>';
+    warehouseMovesTable.onclick = (e) => {
+      const btn = e.target.closest('button[data-wh-arch-day]');
+      if (!btn) return;
+      navigateTo(`warehouse/movimientos/archivados/${encodeURIComponent(btn.dataset.whArchDay || '')}`, { replace: true });
+    };
+    return;
+  }
+
+  if (currentRoute.startsWith('warehouse/movimientos/archivados/')) {
+    const day = decodeURIComponent(currentRoute.split('warehouse/movimientos/archivados/')[1] || '');
+    const list = archivedMoves.filter((m) => (m.archivedDate || warehouseMoveDateKey(m)) === day);
+    const thead = warehouseMovesTable.closest('table')?.querySelector('thead tr');
+    if (thead) thead.innerHTML = '<th>Hora</th><th>Componente</th><th>Tipo</th><th>Cantidad</th><th>Usuario</th>';
+    warehouseMovesTable.innerHTML = list.length ? list.map((m) => `<tr><td>${new Date(m.fecha || Date.now()).toLocaleTimeString()}</td><td>${m.componentName || '-'}</td><td>${m.tipo || '-'}</td><td>${Number(m.cantidad || 0)}</td><td>${m.usuario || '-'}</td></tr>`).join('') : '<tr><td colspan="5">Sin movimientos para la fecha seleccionada.</td></tr>';
+    return;
+  }
+
+  const thead = warehouseMovesTable.closest('table')?.querySelector('thead tr');
+  if (thead) thead.innerHTML = '<th>Fecha</th><th>Hora</th><th>Componente</th><th>Tipo</th><th>Cantidad</th><th>Usuario</th>';
+  warehouseMovesTable.innerHTML = activeMoves.slice(0, 500).map((m) => `<tr><td>${(m.fecha || '').slice(0, 10)}</td><td>${new Date(m.fecha || Date.now()).toLocaleTimeString()}</td><td>${m.componentName || '-'}</td><td>${m.tipo || '-'}</td><td>${Number(m.cantidad || 0)}</td><td>${m.usuario || '-'}</td></tr>`).join('') || '<tr><td colspan="6">Sin movimientos activos.</td></tr>';
+}
+
+function openWarehouseResetModal() {
+  if (!state.currentUser) return;
+  const overlayId = 'warehouseResetOverlay';
+  document.getElementById(overlayId)?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = overlayId;
+  overlay.className = 'modal';
+  overlay.innerHTML = `<div class="modal-card"><h3>Restablecer Almacén</h3><p>Esta acción eliminará completamente toda la información del almacén. Esta acción NO se puede deshacer.</p><label>Para confirmar, ingrese su contraseña.<input id="warehouseResetPassInput" type="password" placeholder="Contraseña actual" /></label><div class="grid2"><button id="warehouseResetConfirmBtn" class="danger" type="button">Confirmar</button><button id="warehouseResetCancelBtn" class="secondary" type="button">Cancelar</button></div><p id="warehouseResetMsg"></p></div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('warehouseResetCancelBtn')?.addEventListener('click', () => overlay.remove());
+  document.getElementById('warehouseResetConfirmBtn')?.addEventListener('click', () => {
+    const pass = String(document.getElementById('warehouseResetPassInput')?.value || '').trim();
+    const user = currentUserRecord();
+    if (!user || pass !== String(user.password || '')) {
+      const msg = document.getElementById('warehouseResetMsg');
+      if (msg) { msg.textContent = 'Contraseña incorrecta.'; msg.className = 'error'; }
+      return;
+    }
+    state.components = [];
+    state.componentLinks = {};
+    state.componentMoves = [];
+    persist();
+    renderWarehouse();
+    overlay.remove();
+    if (warehouseStatus) warehouseStatus.textContent = 'Almacén restablecido correctamente.';
   });
 }
 
@@ -1457,19 +1573,54 @@ function renderWarehouse() {
     warehouseScreen?.classList.add('hidden');
     return;
   }
+
+  const currentRoute = normalizeRoute(window.location.hash || '#warehouse');
+  if (warehouseStatus) warehouseStatus.textContent = 'Gestión de componentes, recetas y movimientos.';
+
+  if (!document.getElementById('warehouseTopActions')) {
+    const wrap = document.createElement('div');
+    wrap.id = 'warehouseTopActions';
+    wrap.className = 'grid3';
+    wrap.innerHTML = '<button id="openWarehouseManagementTabBtn" class="secondary" type="button">Gestión de Componentes y Recetas</button><button id="openWarehouseMovesTabBtn" class="secondary" type="button">Movimientos</button><button id="warehouseResetBtn" class="danger" type="button">Restablecer Almacén</button>';
+    warehouseStatus?.insertAdjacentElement('afterend', wrap);
+    document.getElementById('openWarehouseManagementTabBtn')?.addEventListener('click', () => openWarehouseNewTab('warehouse/gestion'));
+    document.getElementById('openWarehouseMovesTabBtn')?.addEventListener('click', () => openWarehouseNewTab('warehouse/movimientos'));
+    document.getElementById('warehouseResetBtn')?.addEventListener('click', openWarehouseResetModal);
+  }
+
+  const managementVisible = currentRoute === 'warehouse' || currentRoute === 'warehouse/gestion';
+  const movesCard = warehouseMovesTable?.closest('.card');
+  if (warehouseProductSelect?.closest('.grid3')) warehouseProductSelect.closest('.grid3').classList.toggle('hidden', !managementVisible);
+  if (warehouseMoveComponentSelect?.closest('.grid4')) warehouseMoveComponentSelect.closest('.grid4').classList.toggle('hidden', managementVisible);
+  if (movesCard) movesCard.classList.remove('hidden');
+
   if (warehouseProductSelect) warehouseProductSelect.innerHTML = (state.products || []).map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
   const compOpts = (state.components || []).map((c) => `<option value="${c.id}">${c.name}</option>`).join('');
   if (warehouseComponentSelect) warehouseComponentSelect.innerHTML = compOpts;
   if (warehouseMoveComponentSelect) warehouseMoveComponentSelect.innerHTML = compOpts;
+
   const rows = (state.components || []).map((c) => {
     const linked = Object.entries(state.componentLinks || {}).flatMap(([pid, arr]) => (arr || []).filter((x) => x.componentId === c.id).map((x) => ({ pid, qty: x.qty })));
-    const linkedNames = linked.map((x) => `${state.products.find((p) => p.id === x.pid)?.name || '-'} (${x.qty})`).join(', ') || '-';
     const low = Number(c.qty || 0) <= Number(c.min || 0);
-    return { html: `<tr class="${low ? 'selected-row' : ''}"><td>${c.name}</td><td>${linkedNames}</td><td>${linked.map((x) => x.qty).join(', ') || '-'}</td><td>${Number(c.qty || 0)}</td><td><button class="secondary" data-comp-edit="${c.id}" type="button">Editar</button> <button class="secondary" data-comp-del="${c.id}" type="button">Eliminar</button></td></tr>`, low };
+    const linkedProducts = linked.length ? `<ul>${linked.map((x) => `<li>${state.products.find((p) => p.id === x.pid)?.name || '-'}</li>`).join('')}</ul>` : '-';
+    const linkedQty = linked.length ? `<ul>${linked.map((x) => `<li>${Number(x.qty || 0)}</li>`).join('')}</ul>` : '-';
+    return { html: `<tr class="${low ? 'selected-row stock-empty' : ''}"><td>${c.name}</td><td>${linkedProducts}</td><td>${linkedQty}</td><td>${Number(c.qty || 0)}</td><td><button class="secondary" data-comp-edit="${c.id}" type="button">Editar</button> <button class="secondary" data-comp-del="${c.id}" type="button">Eliminar</button></td></tr>`, low };
   }).sort((a, b) => Number(b.low) - Number(a.low));
   warehouseTable.innerHTML = rows.length ? rows.map((x) => x.html).join('') : '<tr><td colspan="5">Sin componentes.</td></tr>';
-  if (warehouseMovesTable) warehouseMovesTable.innerHTML = (state.componentMoves || []).filter(Boolean).slice(0, 300).map((m) => `<tr><td>${new Date(m.fecha || Date.now()).toLocaleString()}</td><td>${m.componentName || '-'}</td><td>${m.tipo || '-'}</td><td>${Number(m.cantidad || 0)}</td><td>${m.usuario || '-'}</td><td>${m.descripcion || '-'}</td></tr>`).join('') || '<tr><td colspan="6">Sin movimientos.</td></tr>';
+
+  if (!document.getElementById('warehouseBottomActions')) {
+    const bottom = document.createElement('div');
+    bottom.id = 'warehouseBottomActions';
+    bottom.className = 'grid2';
+    bottom.innerHTML = '<button id="warehouseBottomMovesBtn" class="secondary" type="button">Movimientos</button><button id="warehouseBottomResetBtn" class="danger" type="button">Restablecer Almacén</button>';
+    warehouseTable.closest('table')?.insertAdjacentElement('afterend', bottom);
+    document.getElementById('warehouseBottomMovesBtn')?.addEventListener('click', () => navigateTo('warehouse/movimientos'));
+    document.getElementById('warehouseBottomResetBtn')?.addEventListener('click', openWarehouseResetModal);
+  }
+
+  renderWarehouseMovesSection(currentRoute);
 }
+
 
 function exportProductsToExcel() {
   if (!window.XLSX) return alert('No se pudo cargar la librería XLSX.');
@@ -1725,7 +1876,7 @@ function renderSummary() {
   }
 
   const sales = salesForActiveCashBox().filter((s) => !s.carryOverDebt);
-  const debtPayments = (state.debtPayments || []).filter((p) => p.cashBoxId === state.activeCashBoxId);
+  const debtPayments = activeDebtPayments().filter((p) => p.cashBoxId === state.activeCashBoxId);
   const cashSales = sales.reduce((a, s) => a + Number(s.breakdown?.cash || 0), 0);
   const qrSales = sales.reduce((a, s) => a + Number(s.breakdown?.qr || 0), 0);
   const debtCash = debtPayments.reduce((a, p) => a + Number(p.cashAmount || (p.method === 'efectivo' ? p.amount : 0) || 0), 0);
@@ -1935,7 +2086,10 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
         cashAmount: cashPaid,
         qrAmount: qrPaid,
         cashBoxId: hasActiveCash ? activeCash.id : '',
-        paidBy: state.currentUser?.username || '-'
+        paidBy: state.currentUser?.username || '-',
+        archivado: false,
+        anulado: false,
+        anuladoPorVentaId: ''
       });
     });
     persist();
@@ -1945,6 +2099,30 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
     renderDebtPayments();
     overlay.remove();
   });
+}
+
+
+function activeDebtPayments() {
+  return (state.debtPayments || []).filter((p) => !p?.anulado);
+}
+
+function annulDebtPaymentsBySaleId(saleId = '', actor = '') {
+  if (!saleId) return 0;
+  let count = 0;
+  (state.debtPayments || []).forEach((pay) => {
+    if (!pay || pay.saleId !== saleId || pay.anulado) return;
+    pay.anulado = true;
+    pay.anuladoPorVentaId = saleId;
+    pay.anuladoAt = new Date().toISOString();
+    pay.anuladoBy = actor || state.currentUser?.username || '-';
+    count += 1;
+  });
+  return count;
+}
+
+function saleRecordForPayment(payment) {
+  if (!payment?.saleId) return null;
+  return state.sales.find((x) => x.id === payment.saleId) || state.deletedSales.find((x) => x.id === payment.saleId) || null;
 }
 
 function renderDebtPayments() {
@@ -1966,19 +2144,19 @@ function renderDebtPayments() {
   const from = debtPaymentsFromDate?.value || '';
   const to = debtPaymentsToDate?.value || '';
   let list = state.debtPayments.slice().sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
-  const activeList = list.filter((p) => !p.archivado);
+  const activeList = list.filter((p) => !p.archivado && !p.anulado);
   const archivedList = list.filter((p) => p.archivado);
   if (from) list = list.filter((p) => (p.paidAt || '').slice(0, 10) >= from);
   if (to) list = list.filter((p) => (p.paidAt || '').slice(0, 10) <= to);
 
   if (state.debtPaymentsView === 'archived') {
-    if (debtPaymentsHead) debtPaymentsHead.innerHTML = '<th>Deudor</th><th>Fecha pago</th><th>Detalle compra</th><th>Total pagado</th><th>Usuario</th>';
+    if (debtPaymentsHead) debtPaymentsHead.innerHTML = '<th>Deudor</th><th>Fecha pago</th><th>Detalle compra</th><th>Total pagado</th><th>Usuario</th><th>Estado</th>';
     const filtered = archivedList.filter((p) => (!from || (p.paidAt || '').slice(0, 10) >= from) && (!to || (p.paidAt || '').slice(0, 10) <= to));
     debtPaymentsTable.innerHTML = filtered.length ? filtered.map((p) => {
-      const sale = state.sales.find((x) => x.id === p.saleId);
+      const sale = saleRecordForPayment(p);
       const person = state.people.find((x) => x.id === p.debtorId);
-      return `<tr><td>${personFullName(person) || '-'}</td><td>${new Date(p.paidAt).toLocaleString()}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${money(p.amount)}</td><td>${p.paidBy || '-'}</td></tr>`;
-    }).join('') : '<tr><td colspan="5">Sin pagos archivados.</td></tr>';
+      return `<tr><td>${personFullName(person) || '-'}</td><td>${new Date(p.paidAt).toLocaleString()}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${money(p.amount)}</td><td>${p.paidBy || '-'}</td><td>${p.anulado ? 'ANULADO' : 'Archivado'}</td></tr>`;
+    }).join('') : '<tr><td colspan="6">Sin pagos archivados.</td></tr>';
     return;
   }
 
@@ -2008,7 +2186,7 @@ function renderDebtPayments() {
     if (debtPaymentsHead) debtPaymentsHead.innerHTML = '<th>Fecha venta</th><th>Fecha pago</th><th>Detalle compra</th><th>Total pagado</th><th>Usuario cobro</th><th>Acción</th>';
     const filtered = activeList.filter((p) => p.debtorId === state.activeDebtorPaymentsId);
     debtPaymentsTable.innerHTML = filtered.length ? filtered.map((p) => {
-      const sale = state.sales.find((x) => x.id === p.saleId);
+      const sale = saleRecordForPayment(p);
       const paidBy = p.paidBy || p.user || '-';
       const saleDate = p.saleCreatedAt || sale?.createdAt || '';
       return `<tr><td>${saleDate ? new Date(saleDate).toLocaleString() : '-'}</td><td>${new Date(p.paidAt).toLocaleString()}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${money(p.amount)}</td><td>${paidBy}</td><td><button class="secondary" data-archive-debt-pay="${p.id}" type="button">Archivar</button></td></tr>`;
@@ -2043,9 +2221,9 @@ function renderDebtPayments() {
   if (debtPaymentsHead) {
     debtPaymentsHead.innerHTML = '<th>Fecha de la venta</th><th>Fecha del pago</th><th>Detalle de la compra</th><th>Total pagado</th><th>Usuario que realizó el cobro</th>';
   }
-  const visible = list.filter((p) => !p.archivado);
+  const visible = list.filter((p) => !p.archivado && !p.anulado);
   debtPaymentsTable.innerHTML = visible.length ? visible.map((p) => {
-    const sale = state.sales.find((x) => x.id === p.saleId);
+    const sale = saleRecordForPayment(p);
     const paidBy = p.paidBy || p.user || '-';
     const saleDate = p.saleCreatedAt || sale?.createdAt || '';
     return `<tr><td>${saleDate ? new Date(saleDate).toLocaleString() : '-'}</td><td>${new Date(p.paidAt).toLocaleString()}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${money(p.amount)}</td><td>${paidBy}</td></tr>`;
@@ -2131,6 +2309,8 @@ async function pullFromCloud(options = {}) {
       if (data[k] !== undefined) state[k] = data[k];
     });
     normalizeCloudSettings();
+    normalizeWarehouseData();
+    normalizeDebtPaymentsData();
     normalizeCashState();
   syncAppConfig();
     console.info('[cloud] estado sincronizado', { activeCashBoxId: state.activeCashBoxId, systemStatus: state.systemStatus });
@@ -2369,7 +2549,7 @@ function closeCashSession() {
 
   const daySales = salesForActiveCashBox().filter((sale) => !sale.carryOverDebt);
   const dayOutflows = (state.outflows || []).filter((move) => move.cashBoxId === state.activeCashBoxId);
-  const dayDebtPayments = (state.debtPayments || []).filter((pay) => pay.cashBoxId === state.activeCashBoxId);
+  const dayDebtPayments = activeDebtPayments().filter((pay) => pay.cashBoxId === state.activeCashBoxId);
   const dayDeletedSales = (state.deletedSales || []).filter((sale) => sale.cashBoxId === state.activeCashBoxId);
 
   const totalsByMethod = daySales.reduce((acc, sale) => {
@@ -2658,9 +2838,10 @@ function normalizeRoute(routeLike) {
 function parentRoute(route) {
   if (route === 'home') return 'home';
   if (route === 'settings') return 'home';
-  if (route in { 'settings/main':1, 'settings/sales':1, 'settings/users':1, 'settings/users/activity':1, 'stock':1, 'warehouse':1, 'pos/ventas':1, 'pos/pedidos':1, 'pos/configVentas':1, 'pos/deudas':1, 'pos/resumen':1, 'cash/closings':1 }) return route.startsWith('settings/') ? 'settings' : 'home';
+  if (route in { 'settings/main':1, 'settings/sales':1, 'settings/users':1, 'settings/users/activity':1, 'stock':1, 'warehouse':1, 'warehouse/gestion':1, 'warehouse/movimientos':1, 'warehouse/movimientos/archivados':1, 'pos/ventas':1, 'pos/pedidos':1, 'pos/configVentas':1, 'pos/deudas':1, 'pos/resumen':1, 'cash/closings':1 }) return route.startsWith('settings/') ? 'settings' : 'home';
   if (route.startsWith('settings/users/edit/') || route === 'settings/users/new') return 'settings/users';
   if (route === 'settings/users/activity') return 'settings/users';
+  if (route.startsWith('warehouse/movimientos/archivados/')) return 'warehouse/movimientos/archivados';
   if (route === 'pos/productos') return 'settings';
   if (route in { 'pos/productos-lista':1, 'pos/productos-categorias':1, 'pos/productos-combo':1 }) return 'pos/productos';
   if (route in { 'pos/historial':1, 'pos/eliminadas':1, 'pos/salidas':1 }) return 'pos/configVentas';
@@ -2715,7 +2896,7 @@ function enforceSingleActiveView(route = normalizeRoute(window.location.hash || 
     hideAllScreens();
     if (route === 'home') homeScreen?.classList.remove('hidden');
     else if (route === 'stock') stockScreen?.classList.remove('hidden');
-    else if (route === 'warehouse') warehouseScreen?.classList.remove('hidden');
+    else if (route === 'warehouse' || route.startsWith('warehouse/')) warehouseScreen?.classList.remove('hidden');
     else if (route.startsWith('pos/') || route === 'cash/closings') posScreen?.classList.remove('hidden');
     else if (route.startsWith('settings')) {
       homeScreen?.classList.remove('hidden');
@@ -2735,7 +2916,7 @@ function renderRoute(route) {
   if (!state.currentUser) return showLogin();
   if (route === 'home') { showHome(); enforceSingleActiveView(route); return; }
   if (route === 'stock') { showStockPage(); enforceSingleActiveView(route); return; }
-  if (route === 'warehouse') { showWarehousePage(); enforceSingleActiveView(route); return; }
+  if (route === 'warehouse' || route === 'warehouse/gestion' || route === 'warehouse/movimientos' || route === 'warehouse/movimientos/archivados' || route.startsWith('warehouse/movimientos/archivados/')) { showWarehousePage(); enforceSingleActiveView(route); return; }
   if (route === 'settings') {
     hideAllScreens();
     homeScreen?.classList.remove('hidden');
@@ -3297,7 +3478,8 @@ function wireEvents() {
     }
     if (b.dataset.saleAct === 'del') {
       if (!hasPermission('deleteSales')) return alert('No tienes permiso para eliminar ventas.');
-      state.deletedSales.unshift({ ...sale, deletedAt: new Date().toISOString(), deletedBy: state.currentUser?.username || '-' });
+      const annulCount = annulDebtPaymentsBySaleId(sale.id, state.currentUser?.username || '-');
+      state.deletedSales.unshift({ ...sale, deletedAt: new Date().toISOString(), deletedBy: state.currentUser?.username || '-', annulledDebtPayments: annulCount });
       if (isStockEnabled()) {
         (sale.items || []).forEach((it) => {
           const p = state.products.find((x) => x.id === it.id || normalizeProductName(x.name) === normalizeProductName(it.name));
@@ -3545,6 +3727,7 @@ async function bootstrap() {
   ensureProductStockDefaults();
   ensurePeopleData();
   normalizeWarehouseData();
+  normalizeDebtPaymentsData();
   normalizeCashState();
   syncAppConfig();
   saveLocalState();
