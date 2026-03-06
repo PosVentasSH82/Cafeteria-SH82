@@ -935,7 +935,10 @@ function renderImageUploadProgress(kind, key) {
 
 function persistImageChange(onRollback) {
   try {
-    persist();
+    // Guardado local directo para evitar estados "subidos" que luego se pierden.
+    saveLocalState();
+    // Sincronización remota en segundo plano (no bloqueante).
+    Promise.resolve().then(syncToCloud);
     return true;
   } catch (error) {
     if (typeof onRollback === 'function') onRollback();
