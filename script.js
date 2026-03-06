@@ -428,7 +428,7 @@ function persist(options = {}) {
 }
 
 function defaultPermissions() {
-  return { closeCash: true, deleteSales: true, accessSettings: true, manageProducts: true, manageCombos: true, editProductPrices: true, viewOrders: true, deleteClosings: true, deleteCashMovements: true, clearDeletedSalesHistory: true, manageUsers: true, viewSalesButton: true, viewSettingsButton: true, viewCloseCashButton: true, viewProductsTab: true, viewConfigVentasTab: true, viewDebtorsTab: true, viewSummaryTab: true, viewClosingsTab: true, viewWarehouseButton: true };
+  return { closeCash: true, deleteSales: true, accessSettings: true, manageProducts: true, manageCombos: true, editProductPrices: true, viewOrders: true, deleteClosings: true, deleteCashMovements: true, clearDeletedSalesHistory: true, manageUsers: true, viewSalesButton: true, viewSettingsButton: true, viewCloseCashButton: true, viewProductsTab: true, viewConfigVentasTab: true, viewDebtorsTab: true, viewSummaryTab: true, viewClosingsTab: true, viewWarehouseButton: true, viewSalesModeButton: true };
 }
 
 function ensureUsers() {
@@ -635,7 +635,7 @@ function getTouchUiConfig() {
   const username = state.currentUser?.username || '';
   if (!username) return { grid: '3x3', cartPosition: 'right' };
   const cfg = state.touchUiConfigByUser?.[username] || {};
-  const grid = ['2x3','3x3','4x3','4x4','5x3','5x4'].includes(cfg.grid) ? cfg.grid : '3x3';
+  const grid = ['2x3','3x2','3x3','4x2','4x3','4x4','2x4','5x3','5x4'].includes(cfg.grid) ? cfg.grid : '3x3';
   const cartPosition = ['left','right','bottom'].includes(cfg.cartPosition) ? cfg.cartPosition : 'right';
   return { grid, cartPosition };
 }
@@ -761,13 +761,18 @@ function ensureSalesModeButton() {
 }
 
 function openSalesModeScreen() {
+  if (!hasPermission('viewSalesModeButton')) {
+    setMsg(homeMessage, 'No tienes permiso para Modo de ventas.', false);
+    navigateTo('home', { replace: true });
+    return;
+  }
   document.getElementById('salesModeOverlay')?.remove();
   const cfg = getTouchUiConfig();
   const mode = currentSalesMode();
   const overlay = document.createElement('div');
   overlay.id = 'salesModeOverlay';
   overlay.className = 'modal';
-  overlay.innerHTML = `<div class="modal-card"><h3>Modo de ventas</h3><div class="grid2"><button id="activateGenericModeBtn" class="${mode === 'generic' ? 'primary' : 'secondary'}" type="button">${mode === 'generic' ? 'Desactivar' : 'Activar'} modo genérico</button><button id="activateTouchModeBtn" class="${mode === 'touch' ? 'primary' : 'secondary'}" type="button">${mode === 'touch' ? 'Desactivar' : 'Activar'} modo táctil</button></div><div id="touchModeConfigWrap" class="${mode === 'touch' ? '' : 'hidden'}"><h4>Configuración modo táctil</h4><div class="grid2"><label>Tamaño o estilo visual<select id="touchGridPresetSel"><option value="2x3">2x3</option><option value="3x3">3x3</option><option value="4x3">4x3</option><option value="4x4">4x4</option><option value="5x3">5x3</option><option value="5x4">5x4</option></select></label><label>Lista de compras<select id="touchCartPosSel"><option value="left">Lateral izquierdo</option><option value="right">Lateral derecho</option><option value="bottom">Abajo</option></select></label></div></div><button id="closeSalesModeOverlayBtn" class="secondary" type="button">Cerrar</button></div>`;
+  overlay.innerHTML = `<div class="modal-card"><h3>Modo de ventas</h3><div class="grid2"><button id="activateGenericModeBtn" class="${mode === 'generic' ? 'primary' : 'secondary'}" type="button">${mode === 'generic' ? 'Desactivar' : 'Activar'} modo genérico</button><button id="activateTouchModeBtn" class="${mode === 'touch' ? 'primary' : 'secondary'}" type="button">${mode === 'touch' ? 'Desactivar' : 'Activar'} modo táctil</button></div><div id="touchModeConfigWrap" class="${mode === 'touch' ? '' : 'hidden'}"><h4>Configuración modo táctil</h4><div class="grid2"><label>Tamaño o estilo visual<select id="touchGridPresetSel"><option value="2x3">2x3</option><option value="3x2">3x2</option><option value="3x3">3x3</option><option value="4x2">4x2</option><option value="4x3">4x3</option><option value="4x4">4x4</option><option value="2x4">2x4</option><option value="5x3">5x3</option><option value="5x4">5x4</option></select></label><label>Lista de compras<select id="touchCartPosSel"><option value="left">Lateral izquierdo</option><option value="right">Lateral derecho</option><option value="bottom">Abajo</option></select></label></div></div><button id="closeSalesModeOverlayBtn" class="secondary" type="button">Cerrar</button></div>`;
   document.body.appendChild(overlay);
   const gridSel = document.getElementById('touchGridPresetSel');
   const posSel = document.getElementById('touchCartPosSel');
@@ -2646,6 +2651,8 @@ function renderHomeActions() {
   if (openSettingsBtn) openSettingsBtn.classList.toggle('hidden', !hasPermission('accessSettings') || !hasPermission('viewSettingsButton'));
   if (goCashClosingsBtn) goCashClosingsBtn.classList.toggle('hidden', !hasPermission('viewClosingsTab'));
   if (goWarehouseBtn) goWarehouseBtn.classList.toggle('hidden', !hasPermission('viewWarehouseButton'));
+  const goSalesModeBtn = document.getElementById('goSalesModeBtn');
+  if (goSalesModeBtn) goSalesModeBtn.classList.toggle('hidden', !hasPermission('viewSalesModeButton'));
   const user = currentUserRecord();
   if (sessionInfo) sessionInfo.textContent = user ? `Usuario activo: ${user.username}` : 'Sin sesión';
   if (posSessionInfo) posSessionInfo.textContent = user ? `Usuario: ${user.username}` : 'Usuario: -';
@@ -3132,6 +3139,7 @@ function permissionSchema() {
     { key: 'viewOrders', label: 'Puede ver botón Pedidos' },
     { key: 'viewClosingsTab', label: 'Puede ver botón Cierre de caja' },
     { key: 'viewWarehouseButton', label: 'Puede ver botón Almacén' },
+    { key: 'viewSalesModeButton', label: 'Puede ver el botón Modo de ventas' },
     { key: 'deleteSales', label: 'Puede eliminar ventas' },
     { key: 'closeCash', label: 'Puede cerrar caja' },
     { key: 'manageProducts', label: 'Puede modificar productos' },
@@ -3198,7 +3206,7 @@ function normalizeRoute(routeLike) {
 function parentRoute(route) {
   if (route === 'home') return 'home';
   if (route === 'settings') return 'home';
-  if (route in { 'settings/main':1, 'settings/sales':1, 'settings/users':1, 'settings/users/activity':1, 'stock':1, 'warehouse':1, 'warehouse/gestion':1, 'warehouse/movimientos':1, 'warehouse/movimientos/archivados':1, 'pos/ventas':1, 'pos/pedidos':1, 'pos/configVentas':1, 'pos/deudas':1, 'pos/resumen':1, 'cash/closings':1 }) return route.startsWith('settings/') ? 'settings' : 'home';
+  if (route in { 'settings/main':1, 'settings/sales':1, 'settings/users':1, 'settings/users/activity':1, 'stock':1, 'warehouse':1, 'warehouse/gestion':1, 'warehouse/movimientos':1, 'warehouse/movimientos/archivados':1, 'pos/ventas':1, 'pos/pedidos':1, 'pos/configVentas':1, 'pos/deudas':1, 'pos/resumen':1, 'cash/closings':1, 'sales-mode':1 }) return route.startsWith('settings/') ? 'settings' : 'home';
   if (route.startsWith('settings/users/edit/') || route === 'settings/users/new') return 'settings/users';
   if (route === 'settings/users/activity') return 'settings/users';
   if (route.startsWith('warehouse/movimientos/archivados/')) return 'warehouse/movimientos/archivados';
@@ -3301,6 +3309,7 @@ function renderRoute(route) {
     enforceSingleActiveView(route);
     return;
   }
+  if (route === 'sales-mode') { if (!hasPermission('viewSalesModeButton')) { setMsg(homeMessage, 'No tienes permiso para Modo de ventas.', false); showHome(); return; } showHome(); openSalesModeScreen(); return; }
   if (route === 'cash/closings') { switchToPos('cierres'); return; }
   if (route === 'pos/ventas') { switchToPos('ventas'); return; }
   if (route === 'pos/pedidos') { switchToPos('pedidos'); return; }
@@ -3573,7 +3582,7 @@ function wireEvents() {
   goWarehouseBtn?.addEventListener('click', () => navigateTo('warehouse'));
   backHomeBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
   openSettingsBtn?.addEventListener('click', () => navigateTo('settings'));
-  document.getElementById('goSalesModeBtn')?.addEventListener('click', openSalesModeScreen);
+  document.getElementById('goSalesModeBtn')?.addEventListener('click', () => navigateTo('sales-mode'));
   closeSettingsScreenBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
   saveSettingsBtn?.addEventListener('click', saveMainSettings);
   openMainConfigBtn?.addEventListener('click', () => navigateTo('settings/main'));
