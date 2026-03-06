@@ -11,7 +11,10 @@ const state = {
   people: JSON.parse(localStorage.getItem('cafeteria_people') || '[]'),
   stockConfig: JSON.parse(localStorage.getItem('cafeteria_stock_config') || '{"enabled":false,"min":0}'),
   queuedOrders: JSON.parse(localStorage.getItem('cafeteria_queued_orders') || '[]'),
-  removedPeopleIds: JSON.parse(localStorage.getItem('cafeteria_removed_people_ids') || '[]')
+  removedPeopleIds: JSON.parse(localStorage.getItem('cafeteria_removed_people_ids') || '[]'),
+  userSalesModes: JSON.parse(localStorage.getItem('cafeteria_user_sales_modes') || '{}'),
+  touchUiConfigByUser: JSON.parse(localStorage.getItem('cafeteria_touch_ui_config_by_user') || '{}'),
+  categoryImages: JSON.parse(localStorage.getItem('cafeteria_category_images') || '{}')
 };
 
 let sessionWatchInterval = null;
@@ -412,6 +415,9 @@ function saveLocalState() {
   localStorage.setItem('cafeteria_component_moves', JSON.stringify(state.componentMoves || []));
   localStorage.setItem('cafeteria_queued_orders', JSON.stringify(state.queuedOrders || []));
   localStorage.setItem('cafeteria_removed_people_ids', JSON.stringify(state.removedPeopleIds || []));
+  localStorage.setItem('cafeteria_user_sales_modes', JSON.stringify(state.userSalesModes || {}));
+  localStorage.setItem('cafeteria_touch_ui_config_by_user', JSON.stringify(state.touchUiConfigByUser || {}));
+  localStorage.setItem('cafeteria_category_images', JSON.stringify(state.categoryImages || {}));
 }
 
 function persist(options = {}) {
@@ -619,6 +625,38 @@ function ensurePeopleData() {
   if (changed) saveLocalState();
 }
 
+function currentSalesMode() {
+  const username = state.currentUser?.username || '';
+  if (!username) return 'generic';
+  return state.userSalesModes?.[username] === 'touch' ? 'touch' : 'generic';
+}
+
+function getTouchUiConfig() {
+  const username = state.currentUser?.username || '';
+  if (!username) return { grid: '3x3', cartPosition: 'right' };
+  const cfg = state.touchUiConfigByUser?.[username] || {};
+  const grid = ['2x3','3x3','4x3','4x4','5x3','5x4'].includes(cfg.grid) ? cfg.grid : '3x3';
+  const cartPosition = ['left','right','bottom'].includes(cfg.cartPosition) ? cfg.cartPosition : 'right';
+  return { grid, cartPosition };
+}
+
+function setSalesModeForCurrentUser(mode) {
+  const username = state.currentUser?.username || '';
+  if (!username) return;
+  if (!state.userSalesModes || typeof state.userSalesModes !== 'object') state.userSalesModes = {};
+  state.userSalesModes[username] = mode === 'touch' ? 'touch' : 'generic';
+  persist();
+}
+
+function setTouchUiConfigForCurrentUser(patch = {}) {
+  const username = state.currentUser?.username || '';
+  if (!username) return;
+  if (!state.touchUiConfigByUser || typeof state.touchUiConfigByUser !== 'object') state.touchUiConfigByUser = {};
+  const next = { ...getTouchUiConfig(), ...patch };
+  state.touchUiConfigByUser[username] = next;
+  persist();
+}
+
 function saleTotals() {
   const gross = state.currentCart.reduce((a, i) => a + i.price * i.qty, 0);
   const discount = state.currentCart.reduce((a, i) => a + (i.price * i.qty * (i.discountPct || 0) / 100), 0);
@@ -644,6 +682,7 @@ function renderCart() {
   if (mixedQrAutoAmount) mixedQrAutoAmount.value = money(Math.max(0, totals.final - Number(cashAmount?.value || 0)));
   if (cashTotalDisplay) cashTotalDisplay.value = money(totals.final);
   if (cashChangeDisplay) cashChangeDisplay.value = money(Math.max(0, Number(cashPaidInput?.value || 0) - totals.final));
+  if (currentSalesMode() === 'touch') renderTouchSaleUi();
 }
 
 function renderSaleSelectors() {
@@ -704,7 +743,166 @@ function renderSaleSelectors() {
     activeSaleCategory = '';
     renderSaleSelectors();
     renderCart();
+    syncSaleUiModeVisibility();
   });
+}
+
+
+function ensureSalesModeButton() {
+  if (!homeScreen || document.getElementById('goSalesModeBtn')) return;
+  const actions = homeScreen.querySelector('.home-actions');
+  if (!actions) return;
+  const btn = document.createElement('button');
+  btn.id = 'goSalesModeBtn';
+  btn.type = 'button';
+  btn.className = 'secondary';
+  btn.textContent = 'Modo de ventas';
+  actions.appendChild(btn);
+}
+
+function openSalesModeScreen() {
+  document.getElementById('salesModeOverlay')?.remove();
+  const cfg = getTouchUiConfig();
+  const mode = currentSalesMode();
+  const overlay = document.createElement('div');
+  overlay.id = 'salesModeOverlay';
+  overlay.className = 'modal';
+  overlay.innerHTML = `<div class="modal-card"><h3>Modo de ventas</h3><div class="grid2"><button id="activateGenericModeBtn" class="${mode === 'generic' ? 'primary' : 'secondary'}" type="button">${mode === 'generic' ? 'Desactivar' : 'Activar'} modo genérico</button><button id="activateTouchModeBtn" class="${mode === 'touch' ? 'primary' : 'secondary'}" type="button">${mode === 'touch' ? 'Desactivar' : 'Activar'} modo táctil</button></div><div id="touchModeConfigWrap" class="${mode === 'touch' ? '' : 'hidden'}"><h4>Configuración modo táctil</h4><div class="grid2"><label>Tamaño o estilo visual<select id="touchGridPresetSel"><option value="2x3">2x3</option><option value="3x3">3x3</option><option value="4x3">4x3</option><option value="4x4">4x4</option><option value="5x3">5x3</option><option value="5x4">5x4</option></select></label><label>Lista de compras<select id="touchCartPosSel"><option value="left">Lateral izquierdo</option><option value="right">Lateral derecho</option><option value="bottom">Abajo</option></select></label></div></div><button id="closeSalesModeOverlayBtn" class="secondary" type="button">Cerrar</button></div>`;
+  document.body.appendChild(overlay);
+  const gridSel = document.getElementById('touchGridPresetSel');
+  const posSel = document.getElementById('touchCartPosSel');
+  if (gridSel) gridSel.value = cfg.grid;
+  if (posSel) posSel.value = cfg.cartPosition;
+  document.getElementById('activateGenericModeBtn')?.addEventListener('click', () => { setSalesModeForCurrentUser('generic'); overlay.remove(); });
+  document.getElementById('activateTouchModeBtn')?.addEventListener('click', () => {
+    setSalesModeForCurrentUser('touch');
+    setTouchUiConfigForCurrentUser({ grid: gridSel?.value || cfg.grid, cartPosition: posSel?.value || cfg.cartPosition });
+    overlay.remove();
+  });
+  gridSel?.addEventListener('change', () => setTouchUiConfigForCurrentUser({ grid: gridSel.value }));
+  posSel?.addEventListener('change', () => setTouchUiConfigForCurrentUser({ cartPosition: posSel.value }));
+  document.getElementById('closeSalesModeOverlayBtn')?.addEventListener('click', () => overlay.remove());
+}
+
+function touchGridCapacity() {
+  const [c, r] = getTouchUiConfig().grid.split('x').map((n) => Number(n || 3));
+  return Math.max(1, c * r);
+}
+
+function touchPlaceholder(label='Sin imagen') {
+  return `<div class="touch-placeholder">${label}</div>`;
+}
+
+function openTouchItemTools(itemId) {
+  const item = state.currentCart.find((x) => x.id === itemId);
+  if (!item) return;
+  document.getElementById('touchToolsOverlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'touchToolsOverlay';
+  overlay.className = 'modal';
+  const defaultSubtotal = Number(item.price || 0) * Number(item.qty || 1);
+  overlay.innerHTML = `<div class="modal-card"><h3>Herramienta: ${item.name}</h3><div class="grid2"><label>Descuento %<input id="touchToolDisc" type="number" min="0" max="100" value="${Number(item.discountPct || 0)}" /></label><label>Precio unitario<input id="touchToolUnit" type="number" min="0" step="0.01" value="${Number(item.price || 0).toFixed(2)}" /></label></div><p>Subtotal base: ${money(defaultSubtotal)}</p><div class="grid2"><button id="touchToolApplyBtn" class="primary" type="button">Aplicar</button><button id="touchToolCancelBtn" class="secondary" type="button">Cancelar</button></div></div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('touchToolApplyBtn')?.addEventListener('click', () => {
+    item.discountPct = Math.max(0, Math.min(100, Number(document.getElementById('touchToolDisc')?.value || 0)));
+    item.price = Math.max(0, Number(document.getElementById('touchToolUnit')?.value || item.price || 0));
+    const total = Number(item.price || 0) * Number(item.qty || 1);
+    item.finalSubtotal = total - (total * Number(item.discountPct || 0) / 100);
+    renderCart();
+    renderTouchSaleUi();
+    overlay.remove();
+  });
+  document.getElementById('touchToolCancelBtn')?.addEventListener('click', () => overlay.remove());
+}
+
+function renderTouchSaleUi() {
+  if (!saleFormContainer || currentSalesMode() !== 'touch') return;
+  let host = document.getElementById('touchSalesContainer');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'touchSalesContainer';
+    saleFormContainer.prepend(host);
+  }
+  const cfg = getTouchUiConfig();
+  const cap = touchGridCapacity();
+  const cats = [...new Set(state.products.filter((p) => !p.hidden).map((p) => p.category))];
+  state.touchUiState = state.touchUiState || { view: 'categories', category: '', page: 0 };
+  const ui = state.touchUiState;
+  if (!cats.includes(ui.category)) { ui.category = ''; ui.view = 'categories'; ui.page = 0; }
+  const list = ui.view === 'categories' ? cats : state.products.filter((p) => !p.hidden && p.category === ui.category);
+  const pages = Math.max(1, Math.ceil(list.length / cap));
+  if (ui.page >= pages) ui.page = 0;
+  const pageItems = list.slice(ui.page * cap, (ui.page + 1) * cap);
+  const renderCard = (item) => {
+    if (ui.view === 'categories') {
+      const img = state.categoryImages?.[item] ? `<img src="${state.categoryImages[item]}" alt="${item}" />` : touchPlaceholder('Categoría');
+      return `<button class="touch-card" data-touch-cat="${item}" type="button">${img}<strong>${item}</strong></button>`;
+    }
+    const img = item.imageDataUrl ? `<img src="${item.imageDataUrl}" alt="${item.name}" />` : touchPlaceholder('Producto');
+    return `<button class="touch-card" data-touch-prod="${item.id}" type="button">${img}<strong>${item.name}</strong><span>${money(item.price)}</span></button>`;
+  };
+  host.className = `touch-sales-layout cart-${cfg.cartPosition}`;
+  host.innerHTML = `<div class="touch-main"><div class="touch-toolbar">${ui.view === 'products' ? '<button id="touchBackToCats" class="secondary" type="button">Volver a categorías</button>' : '<span></span>'}<div class="touch-pager"><button id="touchPrevPage" class="secondary" type="button">◀</button><span>Página ${ui.page + 1}/${pages}</span><button id="touchNextPage" class="secondary" type="button">▶</button></div></div><div class="touch-grid" style="--touch-cols:${getTouchUiConfig().grid.split('x')[0]};">${pageItems.map(renderCard).join('')}</div></div><aside class="touch-cart"><h3>Lista de compras</h3><div class="touch-cart-items">${state.currentCart.length ? state.currentCart.map((i) => `<div class="touch-cart-item"><div><strong>${i.name}</strong><small>${money(i.price)} c/u · Total ${money(Number(i.finalSubtotal ?? (i.price*i.qty)))}</small></div><div class="touch-qty"><button data-touch-dec="${i.id}" type="button">-</button><span>${i.qty}</span><button data-touch-inc="${i.id}" type="button">+</button><button data-touch-tools="${i.id}" type="button">🛠</button><button data-touch-rm="${i.id}" type="button">✕</button></div></div>`).join('') : '<p>Sin productos añadidos.</p>'}</div><div class="touch-summary"><p>Subtotal: ${money(saleTotals().gross)}</p><p>Descuento: ${money(saleTotals().discount)}</p><p><strong>Total: ${money(saleTotals().final)}</strong></p></div><button id="touchProceedPayBtn" class="primary" type="button">Proceder con el pago</button><div class="grid2"><button id="touchQueueBtn" class="secondary" type="button">Añadir a la cola</button><button id="touchQueuedBtn" class="secondary" type="button">Ver pedidos pendientes</button></div><div class="touch-finance"><small>Total de caja: ${cashTotalBox?.textContent || money(0)}</small><small>Cambio final más efectivo del día: ${summaryFinalCash?.textContent || money(0)}</small><small>Total de QR del día: ${summaryFinalQr?.textContent || money(0)}</small></div></aside>`;
+
+  host.querySelector('#touchBackToCats')?.addEventListener('click', () => { ui.view = 'categories'; ui.page = 0; renderTouchSaleUi(); });
+  host.querySelector('#touchPrevPage')?.addEventListener('click', () => { ui.page = (ui.page - 1 + pages) % pages; renderTouchSaleUi(); });
+  host.querySelector('#touchNextPage')?.addEventListener('click', () => { ui.page = (ui.page + 1) % pages; renderTouchSaleUi(); });
+  host.querySelectorAll('[data-touch-cat]').forEach((b) => b.addEventListener('click', () => { ui.view = 'products'; ui.category = b.dataset.touchCat || ''; ui.page = 0; renderTouchSaleUi(); }));
+  host.querySelectorAll('[data-touch-prod]').forEach((b) => b.addEventListener('click', () => {
+    const p = state.products.find((x) => x.id === b.dataset.touchProd);
+    if (!p) return;
+    const e = state.currentCart.find((i) => i.id === p.id);
+    if (e) e.qty += 1; else state.currentCart.push({ id: p.id, name: p.name, price: Number(p.price || 0), qty: 1, discountPct: 0, finalSubtotal: Number(p.price || 0) });
+    const item = state.currentCart.find((i) => i.id === p.id);
+    const total = item.price * item.qty;
+    item.finalSubtotal = total - (total * (item.discountPct || 0) / 100);
+    renderCart();
+    renderTouchSaleUi();
+  }));
+  host.querySelectorAll('[data-touch-inc]').forEach((b) => b.addEventListener('click', () => { const i = state.currentCart.find((x) => x.id === b.dataset.touchInc); if (!i) return; i.qty += 1; i.finalSubtotal = i.price*i.qty - (i.price*i.qty*(i.discountPct||0)/100); renderCart(); renderTouchSaleUi(); }));
+  host.querySelectorAll('[data-touch-dec]').forEach((b) => b.addEventListener('click', () => { const i = state.currentCart.find((x) => x.id === b.dataset.touchDec); if (!i) return; i.qty = Math.max(1, i.qty-1); i.finalSubtotal = i.price*i.qty - (i.price*i.qty*(i.discountPct||0)/100); renderCart(); renderTouchSaleUi(); }));
+  host.querySelectorAll('[data-touch-rm]').forEach((b) => b.addEventListener('click', () => { state.currentCart = state.currentCart.filter((x) => x.id !== b.dataset.touchRm); renderCart(); renderTouchSaleUi(); }));
+  host.querySelectorAll('[data-touch-tools]').forEach((b) => b.addEventListener('click', () => openTouchItemTools(b.dataset.touchTools)));
+  host.querySelector('#touchProceedPayBtn')?.addEventListener('click', () => paymentType?.scrollIntoView({ behavior:'smooth', block:'center' }));
+  host.querySelector('#touchQueueBtn')?.addEventListener('click', queueCurrentSaleDraft);
+  host.querySelector('#touchQueuedBtn')?.addEventListener('click', openQueuedOrdersModal);
+}
+
+function syncSaleUiModeVisibility() {
+  const touch = currentSalesMode() === 'touch';
+  if (touch) renderTouchSaleUi();
+  else document.getElementById('touchSalesContainer')?.remove();
+}
+
+function openImageUploadForProduct(productId) {
+  const p = state.products.find((x) => x.id === productId);
+  if (!p) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.addEventListener('change', () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => { p.imageDataUrl = String(reader.result || ''); persist(); renderProducts(); renderSaleSelectors(); renderTouchSaleUi(); };
+    reader.readAsDataURL(f);
+  });
+  input.click();
+}
+
+function openImageUploadForCategory(categoryName) {
+  if (!categoryName) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.addEventListener('change', () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => { state.categoryImages[categoryName] = String(reader.result || ''); persist(); renderProducts(); renderTouchSaleUi(); };
+    reader.readAsDataURL(f);
+  });
+  input.click();
 }
 
 function renderOrders(finalized = false) {
@@ -1855,8 +2053,8 @@ function openProductListView() {
 function renderProducts() {
   const selectedCategory = productCategory?.value || '';
   const sorted = state.products.slice().sort((a, b) => Number(Boolean(a.hidden)) - Number(Boolean(b.hidden)));
-  if (productsTable) productsTable.innerHTML = sorted.map((p) => `<tr><td>${p.category || '-'}</td><td>${p.name}</td><td>${money(p.price)}</td><td><button class="secondary" data-prod-edit="${p.id}" type="button">Editar</button> <button class="secondary" data-prod-hide="${p.id}" type="button">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class="secondary" data-prod-del="${p.id}" type="button">Eliminar</button></td></tr>`).join('');
-  if (categoriesTable) categoriesTable.innerHTML = (state.categories || []).map((c) => `<tr><td>${c}</td><td>${c === 'Todos' ? '-' : `<button class="secondary" data-cat-del="${c}" type="button">Eliminar</button>`}</td></tr>`).join('');
+  if (productsTable) productsTable.innerHTML = sorted.map((p) => `<tr><td>${p.category || '-'}</td><td>${p.name}</td><td>${money(p.price)}</td><td><button class=\"secondary\" data-prod-edit=\"${p.id}\" type=\"button\">Editar</button> <button class=\"secondary\" data-prod-img=\"${p.id}\" type=\"button\">Subir imagen</button> <button class=\"secondary\" data-prod-hide=\"${p.id}\" type=\"button\">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class=\"secondary\" data-prod-del=\"${p.id}\" type=\"button\">Eliminar</button></td></tr>`).join('');
+  if (categoriesTable) categoriesTable.innerHTML = (state.categories || []).map((c) => `<tr><td>${c}</td><td>${c === 'Todos' ? '-' : `<button class=\"secondary\" data-cat-img=\"${c}\" type=\"button\">Subir imagen</button> <button class=\"secondary\" data-cat-del=\"${c}\" type=\"button\">Eliminar</button>`}</td></tr>`).join('');
   if (productCategory) {
     productCategory.innerHTML = (state.categories || []).map((c) => `<option value="${c}">${c}</option>`).join('');
     if (selectedCategory && state.categories.includes(selectedCategory)) productCategory.value = selectedCategory;
@@ -2335,6 +2533,9 @@ function snapshotPayload() {
     activeCashBoxId: state.activeCashBoxId || '',
     systemStatus: state.systemStatus || 'CAJA_CERRADA',
     forceLogoutAt: Number(state.forceLogoutAt || 0),
+    userSalesModes: state.userSalesModes || {},
+    touchUiConfigByUser: state.touchUiConfigByUser || {},
+    categoryImages: state.categoryImages || {},
     updatedAt: Date.now()
   };
 }
@@ -2388,7 +2589,7 @@ async function pullFromCloud(options = {}) {
     }
     state.lastSyncAt = Number(data.updatedAt || Date.now());
     state.forceLogoutAt = Number(data.forceLogoutAt || 0);
-    ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus'].forEach((k) => {
+    ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages'].forEach((k) => {
       if (data[k] !== undefined) state[k] = data[k];
     });
     normalizeCloudSettings();
@@ -3328,6 +3529,7 @@ function wireEvents() {
     partialFields?.classList.add('hidden');
     renderSaleSelectors();
     renderCart();
+    syncSaleUiModeVisibility();
   });
   paymentType?.addEventListener('change', () => {
     const t = paymentType.value;
@@ -3350,6 +3552,7 @@ function wireEvents() {
   goWarehouseBtn?.addEventListener('click', () => navigateTo('warehouse'));
   backHomeBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
   openSettingsBtn?.addEventListener('click', () => navigateTo('settings'));
+  document.getElementById('goSalesModeBtn')?.addEventListener('click', openSalesModeScreen);
   closeSettingsScreenBtn?.addEventListener('click', () => navigateTo('home', { replace: true }));
   saveSettingsBtn?.addEventListener('click', saveMainSettings);
   openMainConfigBtn?.addEventListener('click', () => navigateTo('settings/main'));
@@ -3500,6 +3703,11 @@ function wireEvents() {
       renderSaleSelectors();
       return;
     }
+    const upImg = e.target.closest('button[data-prod-img]');
+    if (upImg) {
+      openImageUploadForProduct(upImg.dataset.prodImg);
+      return;
+    }
     const del = e.target.closest('button[data-prod-del]');
     if (!del) return;
     state.products = state.products.filter((p) => p.id !== del.dataset.prodDel);
@@ -3509,6 +3717,8 @@ function wireEvents() {
   });
 
   categoriesTable?.addEventListener('click', (e) => {
+    const imgBtn = e.target.closest('button[data-cat-img]');
+    if (imgBtn) { openImageUploadForCategory(imgBtn.dataset.catImg); return; }
     const b = e.target.closest('button[data-cat-del]');
     if (!b) return;
     const cat = b.dataset.catDel;
@@ -3862,12 +4072,16 @@ async function bootstrap() {
   ensureProductStockDefaults();
   normalizePeopleData();
   ensurePeopleData();
+  if (!state.userSalesModes || typeof state.userSalesModes !== 'object') state.userSalesModes = {};
+  if (!state.touchUiConfigByUser || typeof state.touchUiConfigByUser !== 'object') state.touchUiConfigByUser = {};
+  if (!state.categoryImages || typeof state.categoryImages !== 'object') state.categoryImages = {};
   normalizeWarehouseData();
   normalizeDebtPaymentsData();
   normalizeCashState();
   syncAppConfig();
   saveLocalState();
   applySettings();
+  ensureSalesModeButton();
   wireEvents();
   renderOrdersVisibility();
   beginSessionWatcher();
