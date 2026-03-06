@@ -10,7 +10,8 @@ const state = {
   categories: JSON.parse(localStorage.getItem('cafeteria_categories') || '[]'),
   people: JSON.parse(localStorage.getItem('cafeteria_people') || '[]'),
   stockConfig: JSON.parse(localStorage.getItem('cafeteria_stock_config') || '{"enabled":false,"min":0}'),
-  queuedOrders: JSON.parse(localStorage.getItem('cafeteria_queued_orders') || '[]')
+  queuedOrders: JSON.parse(localStorage.getItem('cafeteria_queued_orders') || '[]'),
+  removedPeopleIds: JSON.parse(localStorage.getItem('cafeteria_removed_people_ids') || '[]')
 };
 
 let sessionWatchInterval = null;
@@ -410,6 +411,7 @@ function saveLocalState() {
   localStorage.setItem('cafeteria_component_links', JSON.stringify(state.componentLinks || {}));
   localStorage.setItem('cafeteria_component_moves', JSON.stringify(state.componentMoves || []));
   localStorage.setItem('cafeteria_queued_orders', JSON.stringify(state.queuedOrders || []));
+  localStorage.setItem('cafeteria_removed_people_ids', JSON.stringify(state.removedPeopleIds || []));
 }
 
 function persist(options = {}) {
@@ -596,6 +598,14 @@ function ensureSeedData() {
 
 function ensureProductStockDefaults() {
   state.products = (state.products || []).map((p) => ({ ...p, stockCurrent: Number(p.stockCurrent || 0) }));
+}
+
+
+function normalizePeopleData() {
+  if (!Array.isArray(state.people)) state.people = [];
+  if (!Array.isArray(state.removedPeopleIds)) state.removedPeopleIds = [];
+  const removed = new Set(state.removedPeopleIds.map((x) => String(x || '')));
+  state.people = state.people.filter((p) => p && !removed.has(String(p.id || '')));
 }
 
 function ensurePeopleData() {
@@ -975,48 +985,38 @@ function openSelectClosingsModal() {
 }
 
 
+
 function openModifyOpeningCashModal() {
   if (!isAdminUser()) return;
+  const active = getActiveCashBox();
+  if (!active) return alert('No hay caja activa para modificar inicio de caja.');
   document.getElementById('modifyOpeningOverlay')?.remove();
-  const closings = activeClosingsList();
-  const currentId = activeClosingDetailId || closings[0]?.id || '';
-  const current = state.cashClosings.find((c) => c.id === currentId) || closings[0];
-  if (!current) return alert('No hay cierres disponibles para modificar.');
   const ov = document.createElement('div');
   ov.id = 'modifyOpeningOverlay';
   ov.className = 'modal';
-  ov.innerHTML = `<div class="modal-card"><h3>Modificar inicio de caja</h3><label>Cierre<select id="modifyOpeningClosingSel">${closings.map((c) => `<option value="${c.id}" ${c.id===current.id?'selected':''}>#${String(c.id||'').slice(-8)} · ${new Date(c.closedAt).toLocaleString()}</option>`).join('')}</select></label><p id="currentOpeningText">Inicio actual: ${money(Number(current.openingCash || 0))}</p><label>Nuevo monto<input id="newOpeningCashInput" type="number" min="0" step="0.01" value="${Number(current.openingCash || 0)}" /></label><label>Contraseña admin<input id="modifyOpeningPassInput" type="password" placeholder="Contraseña admin" /></label><div class="grid2"><button id="confirmModifyOpeningBtn" class="primary" type="button">Añadir cambio</button><button id="cancelModifyOpeningBtn" class="secondary" type="button">Cancelar</button></div><p id="modifyOpeningMsg"></p></div>`;
+  ov.innerHTML = `<div class="modal-card"><h3>Modificar inicio de caja actual</h3><p>Caja activa: ${String(active.id || '').slice(-8)}</p><p id="currentOpeningText">Inicio actual: ${money(Number(active.openingCash || 0))}</p><label>Nuevo monto<input id="newOpeningCashInput" type="number" min="0" step="0.01" value="${Number(active.openingCash || 0)}" /></label><label>Contraseña admin<input id="modifyOpeningPassInput" type="password" placeholder="Contraseña admin" /></label><div class="grid2"><button id="confirmModifyOpeningBtn" class="primary" type="button">Añadir cambio</button><button id="cancelModifyOpeningBtn" class="secondary" type="button">Cancelar</button></div><p id="modifyOpeningMsg"></p></div>`;
   document.body.appendChild(ov);
-  const sel = document.getElementById('modifyOpeningClosingSel');
-  const syncCurrent = () => {
-    const c = state.cashClosings.find((x) => x.id === sel?.value);
-    const txt = document.getElementById('currentOpeningText');
-    const inp = document.getElementById('newOpeningCashInput');
-    if (txt && c) txt.textContent = `Inicio actual: ${money(Number(c.openingCash || 0))}`;
-    if (inp && c) inp.value = String(Number(c.openingCash || 0));
-  };
-  sel?.addEventListener('change', syncCurrent);
   document.getElementById('cancelModifyOpeningBtn')?.addEventListener('click', () => ov.remove());
   document.getElementById('confirmModifyOpeningBtn')?.addEventListener('click', () => {
     const admin = currentUserRecord();
     const pass = String(document.getElementById('modifyOpeningPassInput')?.value || '');
-    const target = state.cashClosings.find((x) => x.id === sel?.value);
     const val = Math.max(0, Number(document.getElementById('newOpeningCashInput')?.value || 0));
     if (!admin || admin.username !== 'admin' || pass !== String(admin.password || '')) {
       const m = document.getElementById('modifyOpeningMsg');
       if (m) { m.textContent = 'Contraseña admin incorrecta.'; m.className = 'error'; }
       return;
     }
-    if (!target) return;
-    target.openingCash = val;
-    target.finalCashInBox = val + Number(target.cashIn || 0);
+    active.openingCash = val;
+    if (state.cashSession && state.cashSession.id === active.id) state.cashSession.openingCash = val;
     persist();
-    renderCashClosings();
-    if (activeClosingDetailId === target.id) renderClosingDetails(target.id);
+    renderCashStatus();
+    renderSummary();
+    renderHomeActions();
     ov.remove();
-    alert('Inicio de caja actualizado y cierre recalculado.');
+    alert('Inicio de caja actual actualizado correctamente.');
   });
 }
+
 
 function buildStatsFromSelectedClosings() {
   const selected = activeClosingsList().filter((c)=>state.selectedClosingIds.includes(c.id));
@@ -1278,9 +1278,12 @@ function openPeopleListModal() {
     }
     const del = e.target.closest('button[data-pm-del]');
     if (!del) return;
-    state.people = state.people.filter((p) => p.id !== del.dataset.pmDel);
+    const removedId = String(del.dataset.pmDel || '');
+    state.people = state.people.filter((p) => p.id !== removedId);
+    state.removedPeopleIds = Array.from(new Set([...(state.removedPeopleIds || []), removedId]));
     persist();
     renderPeopleSelectors();
+    renderDebtors();
     openPeopleListModal();
   });
 }
@@ -2391,6 +2394,7 @@ async function pullFromCloud(options = {}) {
     normalizeCloudSettings();
     normalizeWarehouseData();
     normalizeDebtPaymentsData();
+    normalizePeopleData();
     normalizeCashState();
   syncAppConfig();
     console.info('[cloud] estado sincronizado', { activeCashBoxId: state.activeCashBoxId, systemStatus: state.systemStatus });
@@ -2495,6 +2499,7 @@ function switchToPos(tabId = 'ventas') {
   posScreen?.classList.remove('hidden');
   tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === tabId));
   panels.forEach((p) => p.classList.toggle('active', p.id === tabId));
+  if (tabId === 'cierres') renderCashClosings();
 }
 
 async function handleLogin() {
@@ -3855,6 +3860,7 @@ async function bootstrap() {
   ensureUsers();
   ensureSeedData();
   ensureProductStockDefaults();
+  normalizePeopleData();
   ensurePeopleData();
   normalizeWarehouseData();
   normalizeDebtPaymentsData();
