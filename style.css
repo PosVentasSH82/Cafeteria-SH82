@@ -37,9 +37,12 @@ body.with-top-navigation main,body.with-top-navigation #stockScreen{padding-top:
 .touch-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;}
 .touch-pager{display:flex;gap:.45rem;align-items:center;}
 .touch-grid{display:grid;grid-template-columns:repeat(var(--touch-cols,3),minmax(100px,1fr));gap:.6rem;}
-.touch-card{border:1px solid var(--border);border-radius:12px;background:#fff;padding:.5rem;display:grid;gap:.35rem;text-align:left;min-height:150px;}
-.touch-card img{width:100%;height:88px;object-fit:cover;border-radius:8px;}
-.touch-placeholder{display:grid;place-items:center;height:88px;border:1px dashed var(--border);border-radius:8px;color:var(--muted);font-size:.8rem;}
+.touch-card{border:1px solid var(--border);border-radius:12px;background:#fff;padding:.5rem;display:flex;flex-direction:column;gap:.35rem;justify-content:center;align-items:center;min-height:150px;overflow:hidden;text-align:center;}
+.touch-card.with-image{justify-content:flex-start;}
+.touch-media{width:100%;height:88px;object-fit:contain;border-radius:8px;background:#fff;}
+.touch-card-title,.touch-card-price{max-width:100%;text-align:center;overflow-wrap:anywhere;word-break:break-word;}
+.touch-card-title{font-size:clamp(.76rem,2.4vw,.95rem);line-height:1.2;}
+.touch-card-price{font-size:clamp(.74rem,2.2vw,.9rem);color:var(--muted);}
 .touch-cart{border:1px solid var(--border);border-radius:12px;padding:.6rem;background:#fff;}
 .touch-cart-items{display:grid;gap:.45rem;max-height:45vh;overflow:auto;}
 .touch-cart-item{display:flex;justify-content:space-between;gap:.4rem;border-bottom:1px dashed var(--border);padding-bottom:.3rem;}
@@ -48,6 +51,6 @@ body.with-top-navigation main,body.with-top-navigation #stockScreen{padding-top:
 .touch-qty button{padding:.25rem .45rem;}
 .touch-finance{display:grid;gap:.2rem;margin-top:.5rem;color:var(--muted);}
 .people-scroll{max-height:230px;overflow-y:auto;}
-@media (max-width:900px){.touch-sales-layout.cart-right,.touch-sales-layout.cart-left{grid-template-columns:1fr;}}
+@media (max-width:900px){.touch-sales-layout.cart-right,.touch-sales-layout.cart-left{grid-template-columns:1fr;}.touch-card{min-height:132px;padding:.45rem;}.touch-media{height:72px;}.touch-card-title{font-size:clamp(.72rem,3vw,.88rem);}}
 .image-cell{display:flex;align-items:center;gap:.45rem;}
 .image-thumb{width:42px;height:42px;object-fit:cover;border-radius:6px;border:1px solid var(--border);}
