@@ -325,6 +325,9 @@ const billingMessage1FontInput = $('billingMessage1FontInput');
 const billingMessage2SizeInput = $('billingMessage2SizeInput');
 const billingMessage2BoldInput = $('billingMessage2BoldInput');
 const billingMessage2FontInput = $('billingMessage2FontInput');
+const billingAutoPrintInput = $('billingAutoPrintInput');
+const billingAutoPrintIndicator = $('billingAutoPrintIndicator');
+const billingAutoPrintToggleActionBtn = $('billingAutoPrintToggleActionBtn');
 const closeCashBtnCard = $('closeCashBtn');
 let activeSaleCategory = '';
 let activeOrderId = '';
@@ -395,7 +398,8 @@ const defaultBillingConfig = {
   message1Font: 'helvetica',
   message2SizePt: 9,
   message2Bold: false,
-  message2Font: 'helvetica'
+  message2Font: 'helvetica',
+  autoPrintEnabled: false
 };
 
 function normalizeBillingSettings() {
@@ -419,6 +423,7 @@ function normalizeBillingSettings() {
   merged.message2SizePt = Math.max(7, Math.min(18, Number(merged.message2SizePt || 9)));
   merged.message2Bold = Boolean(merged.message2Bold);
   merged.message2Font = ['helvetica', 'times', 'courier'].includes(String(merged.message2Font || 'helvetica')) ? String(merged.message2Font || 'helvetica') : 'helvetica';
+  merged.autoPrintEnabled = Boolean(merged.autoPrintEnabled);
   state.settings.billing = merged;
   return merged;
 }
@@ -1361,6 +1366,9 @@ function applySettings() {
   if (billingMessage2FontInput) billingMessage2FontInput.value = billing.message2Font || 'helvetica';
   if (billingModeIndicator) billingModeIndicator.textContent = `Estado actual: ${billing.enabled ? 'ACTIVADO' : 'DESACTIVADO'}`;
   if (billingToggleActionBtn) billingToggleActionBtn.textContent = billing.enabled ? 'Desactivar' : 'Activar';
+  if (billingAutoPrintInput) billingAutoPrintInput.checked = Boolean(billing.autoPrintEnabled);
+  if (billingAutoPrintIndicator) billingAutoPrintIndicator.textContent = `Estado actual: ${billing.autoPrintEnabled ? 'ACTIVADO' : 'DESACTIVADO'}`;
+  if (billingAutoPrintToggleActionBtn) billingAutoPrintToggleActionBtn.textContent = billing.autoPrintEnabled ? 'Desactivar' : 'Activar';
   if (billingLogoCurrentPreview && billingLogoCurrentText) {
     if (billing.logoDataUrl) {
       billingLogoCurrentPreview.src = billing.logoDataUrl;
@@ -2689,6 +2697,7 @@ function invoicePaymentRows(sale, symbol) {
 
 async function openSaleInvoiceWindow(sale, options = {}) {
   if (!sale) return;
+  const startedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   if (options.syncBeforeOpen) await syncToCloud();
   const data = sale.invoiceSnapshot || buildInvoiceData(sale);
   const cfg = { ...defaultBillingConfig, ...(data?.config || {}), ...billingSettings() };
@@ -2748,9 +2757,22 @@ async function openSaleInvoiceWindow(sale, options = {}) {
     if (cfg.message2) doc.text(String(cfg.message2), width / 2, y, { align: 'center', maxWidth: width - (margin * 2) });
 
     const blobUrl = doc.output('bloburl');
-    const win = window.open(blobUrl, '_blank');
-    if (!win) setMsg(homeMessage, 'Bloqueador de ventanas activo. Permite popups para ver la factura.', false);
-    setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch {} }, 120000);
+    if (options.autoPrint) {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        setMsg(homeMessage, 'Bloqueador de ventanas activo. Permite popups para ver e imprimir la factura.', false);
+      } else {
+        printWindow.document.open();
+        printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Factura</title><style>html,body{margin:0;height:100%;background:#202020;}iframe{border:0;width:100%;height:100%;}</style></head><body><iframe id="pdfFrame" src="${blobUrl}"></iframe><script>const frame=document.getElementById('pdfFrame');const trigger=()=>setTimeout(()=>{try{window.focus();window.print();}catch(e){}},450);if(frame){frame.addEventListener('load', trigger);setTimeout(trigger,900);}else{setTimeout(trigger,900);}<'+'/'+'script></body></html>`);
+        printWindow.document.close();
+      }
+    } else {
+      const win = window.open(blobUrl, '_blank');
+      if (!win) setMsg(homeMessage, 'Bloqueador de ventanas activo. Permite popups para ver la factura.', false);
+    }
+    setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch {} }, 180000);
+    const elapsedMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - startedAt);
+    console.info('[invoice] PDF listo en', elapsedMs, 'ms', { items: (data.items || []).length, autoPrint: Boolean(options.autoPrint) });
   } catch (err) {
     console.error('[invoice] open pdf', err);
     setMsg(homeMessage, 'No se pudo generar la factura PDF.', false);
@@ -3531,7 +3553,8 @@ async function registerSale() {
   state.sales.unshift(sale);
   state.currentCart = [];
   persist();
-  if (billingSettings().enabled) await openSaleInvoiceWindow(sale, { syncBeforeOpen: false });
+  const billingCfg = billingSettings();
+  if (billingCfg.enabled) await openSaleInvoiceWindow(sale, { syncBeforeOpen: false, autoPrint: Boolean(billingCfg.autoPrintEnabled) });
   renderCart();
   renderOrders(false);
   setMsg(saleMessage, 'Venta registrada correctamente.');
@@ -3955,6 +3978,7 @@ function saveBillingSettings() {
   billing.message2SizePt = Math.max(7, Math.min(18, Number(billingMessage2SizeInput?.value || billing.message2SizePt || 9)));
   billing.message2Bold = Boolean(billingMessage2BoldInput?.checked);
   billing.message2Font = String(billingMessage2FontInput?.value || billing.message2Font || 'helvetica');
+  billing.autoPrintEnabled = Boolean(billingAutoPrintInput?.checked);
   const applyPersist = () => {
     state.settings.billing = { ...billing };
     persist();
@@ -4170,6 +4194,12 @@ function wireEvents() {
     const active = Boolean(billingEnabledInput?.checked);
     if (billingModeIndicator) billingModeIndicator.textContent = `Estado actual: ${active ? 'ACTIVADO' : 'DESACTIVADO'}`;
     if (billingToggleActionBtn) billingToggleActionBtn.textContent = active ? 'Desactivar' : 'Activar';
+  });
+  billingAutoPrintToggleActionBtn?.addEventListener('click', () => {
+    if (billingAutoPrintInput) billingAutoPrintInput.checked = !billingAutoPrintInput.checked;
+    const active = Boolean(billingAutoPrintInput?.checked);
+    if (billingAutoPrintIndicator) billingAutoPrintIndicator.textContent = `Estado actual: ${active ? 'ACTIVADO' : 'DESACTIVADO'}`;
+    if (billingAutoPrintToggleActionBtn) billingAutoPrintToggleActionBtn.textContent = active ? 'Desactivar' : 'Activar';
   });
   saveBillingConfigBtn?.addEventListener('click', saveBillingSettings);
   removeBillingLogoBtn?.addEventListener('click', () => {
