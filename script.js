@@ -310,6 +310,9 @@ const billingMessage1Input = $('billingMessage1Input');
 const billingMessage2Input = $('billingMessage2Input');
 const saveBillingConfigBtn = $('saveBillingConfigBtn');
 const billingConfigStatus = $('billingConfigStatus');
+const billingModeIndicator = $('billingModeIndicator');
+const billingLogoCurrentPreview = $('billingLogoCurrentPreview');
+const billingLogoCurrentText = $('billingLogoCurrentText');
 const closeCashBtnCard = $('closeCashBtn');
 let activeSaleCategory = '';
 let activeOrderId = '';
@@ -1311,6 +1314,18 @@ function applySettings() {
   if (billingMarginInput) billingMarginInput.value = String(Number(billing.marginMm || 4));
   if (billingMessage1Input) billingMessage1Input.value = billing.message1 || '';
   if (billingMessage2Input) billingMessage2Input.value = billing.message2 || '';
+  if (billingModeIndicator) billingModeIndicator.textContent = `Estado actual: ${billing.enabled ? 'ACTIVADO' : 'DESACTIVADO'}`;
+  if (billingLogoCurrentPreview && billingLogoCurrentText) {
+    if (billing.logoDataUrl) {
+      billingLogoCurrentPreview.src = billing.logoDataUrl;
+      billingLogoCurrentPreview.classList.remove('hidden');
+      billingLogoCurrentText.textContent = 'Logo actual: Configurado';
+    } else {
+      billingLogoCurrentPreview.src = '';
+      billingLogoCurrentPreview.classList.add('hidden');
+      billingLogoCurrentText.textContent = 'Logo actual: No configurado';
+    }
+  }
   if (state.settings.logoDataUrl && homeLogo && logoPlaceholder) {
     homeLogo.src = state.settings.logoDataUrl;
     homeLogo.classList.remove('hidden');
@@ -2630,17 +2645,22 @@ async function openSaleInvoiceWindow(sale, options = {}) {
   if (!sale) return;
   if (options.syncBeforeOpen) await syncToCloud();
   const data = sale.invoiceSnapshot || buildInvoiceData(sale);
-  const cfg = { ...defaultBillingConfig, ...(data?.config || {}) };
+  const cfg = { ...defaultBillingConfig, ...(data?.config || {}), ...billingSettings() };
   const symbol = cfg.currencySymbol || 'Bs';
+  const imageFormat = String(cfg.logoDataUrl || '').includes('image/jpeg') ? 'JPEG' : 'PNG';
   try {
     await ensureJsPdfLibs();
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'mm', format: [Math.max(100, Number(cfg.paperWidthMm || 80) * 2.8), Math.max(180, Number(cfg.paperWidthMm || 80) * 4.2)] });
+    const ticketWidth = Math.max(58, Math.min(120, Number(cfg.paperWidthMm || 80)));
+    const doc = new jsPDF({ unit: 'mm', format: [ticketWidth, 220] });
     const margin = Math.max(2, Number(cfg.marginMm || 4));
     const width = doc.internal.pageSize.getWidth();
     let y = margin + 2;
     if (cfg.logoDataUrl) {
-      try { doc.addImage(cfg.logoDataUrl, 'PNG', (width / 2) - 14, y, 28, 20); y += 22; } catch {}
+      try {
+        doc.addImage(cfg.logoDataUrl, imageFormat, (width / 2) - 14, y, 28, 20);
+        y += 28;
+      } catch {}
     }
     doc.setFontSize(12);
     doc.text(String(cfg.title || 'RECIBO'), width / 2, y, { align: 'center' });
@@ -2673,13 +2693,8 @@ async function openSaleInvoiceWindow(sale, options = {}) {
     if (cfg.message2) doc.text(String(cfg.message2), width / 2, y, { align: 'center' });
 
     const blobUrl = doc.output('bloburl');
-    const win = window.open(blobUrl, '_blank', 'noopener,noreferrer');
-    if (!win) {
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `factura_${orderNumberLabel(data.orderNumber)}.pdf`;
-      a.click();
-    }
+    const win = window.open(blobUrl, '_blank');
+    if (!win) setMsg(homeMessage, 'Bloqueador de ventanas activo. Permite popups para ver la factura.', false);
     setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch {} }, 120000);
   } catch (err) {
     console.error('[invoice] open pdf', err);
@@ -3877,6 +3892,7 @@ function saveBillingSettings() {
   const applyPersist = () => {
     state.settings.billing = { ...billing };
     persist();
+    applySettings();
     if (billingConfigStatus) billingConfigStatus.textContent = 'Configuración de facturación guardada y sincronizada.';
   };
   const file = billingLogoInput?.files?.[0];
