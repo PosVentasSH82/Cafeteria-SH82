@@ -3366,14 +3366,15 @@ async function syncToCloud(options = {}) {
     if (putResp.status === 412) {
       if (Number(options.attempt || 0) < 2) return syncToCloud({ ...options, attempt: Number(options.attempt || 0) + 1 });
       if (syncStatus) syncStatus.textContent = 'Conflicto detectado. Reintenta sincronizar.';
-      return;
+      throw new Error('sync conflict');
     }
     if (!putResp.ok) throw new Error(`sync put failed: ${putResp.status}`);
     state.lastSyncAt = Number(payload.updatedAt || Date.now());
     saveLocalState();
     if (syncStatus) syncStatus.textContent = 'Sincronización enviada.';
-  } catch {
+  } catch (err) {
     if (syncStatus) syncStatus.textContent = 'Error de sincronización.';
+    throw err;
   }
 }
 
@@ -3403,6 +3404,7 @@ async function pullFromCloud(options = {}) {
     ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds'].forEach((k) => {
       if (data[k] !== undefined) state[k] = data[k];
     });
+    if (state.currentUser && !validateSessionPolicy({ silent: true })) return;
     normalizeCloudSettings();
     normalizeWarehouseData();
     normalizeDebtPaymentsData();
@@ -3813,16 +3815,9 @@ async function registerSale() {
   persist({ sync: false });
   let confirmed = false;
   try {
-    await syncToCloud();
-    await pullFromCloud({ force: true });
-    confirmed = state.sales.some((x) => x.id === sale.id);
-    if (!confirmed) {
-      state.sales.unshift(sale);
-      persist({ sync: false });
-      await syncToCloud({ attempt: 1 });
-      await pullFromCloud({ force: true });
-      confirmed = state.sales.some((x) => x.id === sale.id);
-    }
+    await syncToCloud({ attempt: 0 });
+    confirmed = true;
+    Promise.resolve().then(() => pullFromCloud({ force: true })).catch(() => {});
   } catch (err) {
     console.error('[sale] confirm sync failed', err);
   }
@@ -4532,7 +4527,7 @@ function wireEvents() {
     applySettings();
   });
   openDatabaseConfigBtn?.classList.add('hidden');
-  syncNowBtn?.addEventListener('click', async () => { await syncToCloud(); if (syncStatus) syncStatus.textContent = 'Sincronizado con Firebase.'; });
+  syncNowBtn?.addEventListener('click', async () => { try { await syncToCloud(); if (syncStatus) syncStatus.textContent = 'Sincronizado con Firebase.'; } catch {} });
   backFromMainConfigBtn?.addEventListener('click', () => navigateTo(parentRoute(normalizeRoute(window.location.hash || '#home')), { replace: true }));
   backFromUsersConfigBtn?.addEventListener('click', () => navigateTo(parentRoute(normalizeRoute(window.location.hash || '#home')), { replace: true }));
   backFromDatabaseConfigBtn?.addEventListener('click', () => navigateTo(parentRoute(normalizeRoute(window.location.hash || '#home')), { replace: true }));
