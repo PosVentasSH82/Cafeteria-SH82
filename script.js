@@ -503,10 +503,11 @@ function refreshFinancialViews() {
 
 function productsForLocalPersistence() {
   return (state.products || []).map((p) => {
-    const raw = String(p?.imageDataUrl || '');
-    if (!raw.startsWith('data:')) return p;
     const copy = { ...p };
-    delete copy.imageDataUrl;
+    const rawLegacy = String(copy?.imageDataUrl || '');
+    const rawUrl = String(copy?.imageUrl || '');
+    if (rawLegacy.startsWith('data:')) delete copy.imageDataUrl;
+    if (rawUrl.startsWith('data:')) delete copy.imageUrl;
     return copy;
   });
 }
@@ -572,6 +573,99 @@ function cloudChildUrl(childPath = '') {
   if (!root) return '';
   const safeChild = String(childPath || '').replace(/^\/+/, '');
   return safeChild ? root.replace(/\.json(\?.*)?$/, `/${safeChild}.json$1`) : root;
+}
+
+
+function inferStorageBucket() {
+  const configured = String(state.settings?.firebaseStorageBucket || '').trim();
+  if (configured) return configured;
+  const dbUrl = String(state.settings?.firebaseDbUrl || defaultCloudConfig.firebaseDbUrl || '');
+  const m = dbUrl.match(/^https:\/\/([^.]+)\./i);
+  if (!m) return '';
+  return `${m[1]}.appspot.com`;
+}
+
+let firebaseStorageReadyPromise = null;
+async function ensureFirebaseStorageSdk() {
+  if (window.firebase?.storage) return window.firebase;
+  if (firebaseStorageReadyPromise) return firebaseStorageReadyPromise;
+  const loadScript = (src) => new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      if (window.firebase?.storage) return resolve();
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error(`No se pudo cargar ${src}`)), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`No se pudo cargar ${src}`));
+    document.head.appendChild(script);
+  });
+  firebaseStorageReadyPromise = (async () => {
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js');
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.4/firebase-storage-compat.js');
+    if (!window.firebase) throw new Error('Firebase SDK no disponible.');
+    const bucket = inferStorageBucket();
+    if (!bucket) throw new Error('No se pudo inferir firebaseStorageBucket.');
+    const appName = 'cafeteria-storage';
+    const existing = window.firebase.apps.find((a) => a.name === appName);
+    const app = existing || window.firebase.initializeApp({ storageBucket: bucket }, appName);
+    return { app, storage: window.firebase.storage(app) };
+  })();
+  return firebaseStorageReadyPromise;
+}
+
+function normalizeImagePathSegment(value) {
+  return String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'item';
+}
+
+async function optimizeImageForUpload(file, { maxSize = 300 } = {}) {
+  const imageBitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxSize / Math.max(imageBitmap.width || 1, imageBitmap.height || 1));
+  const width = Math.max(1, Math.round(imageBitmap.width * scale));
+  const height = Math.max(1, Math.round(imageBitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { alpha: true });
+  ctx.drawImage(imageBitmap, 0, 0, width, height);
+  imageBitmap.close();
+  const toBlob = (type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+  let blob = await toBlob('image/webp', 0.78);
+  if (!blob) blob = await toBlob('image/jpeg', 0.8);
+  if (!blob) throw new Error('No se pudo procesar la imagen.');
+  return { blob, contentType: blob.type || 'image/webp' };
+}
+
+async function uploadImageToFirebaseStorage({ kind, key, file, previousUrl = '', onProgress = null }) {
+  const { storage } = await ensureFirebaseStorageSdk();
+  const safeKey = normalizeImagePathSegment(key);
+  const ext = file.type.includes('png') ? 'webp' : (file.type.includes('jpeg') || file.type.includes('jpg') ? 'jpg' : 'webp');
+  const folder = kind === 'category' ? 'categorias' : 'productos';
+  const path = `${folder}/${safeKey}-${Date.now()}.${ext}`;
+  const optimized = await optimizeImageForUpload(file, { maxSize: kind === 'category' ? 400 : 300 });
+  const ref = storage.ref(path);
+  const task = ref.put(optimized.blob, { contentType: optimized.contentType, cacheControl: 'public,max-age=31536000' });
+  await new Promise((resolve, reject) => {
+    task.on('state_changed', (snap) => {
+      if (!onProgress) return;
+      const total = Number(snap.totalBytes || 0);
+      const loaded = Number(snap.bytesTransferred || 0);
+      const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      onProgress(pct);
+    }, reject, resolve);
+  });
+  const downloadUrl = await ref.getDownloadURL();
+  try {
+    if (previousUrl && previousUrl.includes('/o/')) {
+      const oldPath = decodeURIComponent(previousUrl.split('/o/')[1]?.split('?')[0] || '');
+      if (oldPath) await storage.ref(oldPath).delete();
+    }
+  } catch {}
+  return downloadUrl;
 }
 
 async function pullFromCloudWithTimeout(timeoutMs = 1800) {
@@ -1073,12 +1167,12 @@ function renderTouchSaleUi() {
     if (ui.view === 'categories') {
       const hasImg = Boolean(state.categoryImages?.[item]);
       const categorySrc = resolveImageSource(state.categoryImages[item]);
-      const img = categorySrc ? `<img class=\"touch-media\" src=\"${categorySrc}\" alt=\"${item}\" />` : '';
+      const img = categorySrc ? `<img class=\"touch-media\" src=\"${categorySrc}\" alt=\"${item}\" loading=\"lazy\" />` : '';
       return `<button class="touch-card ${hasImg ? 'with-image' : 'no-image'}" data-touch-cat="${item}" type="button">${img}<strong class="touch-card-title">${item}</strong></button>`;
     }
-    const hasImg = Boolean(item.imageDataUrl);
-    const productSrc = resolveImageSource(item.imageDataUrl);
-    const img = productSrc ? `<img class=\"touch-media\" src=\"${productSrc}\" alt=\"${item.name}\" />` : '';
+    const productSrc = resolveImageSource(item.imageUrl || item.imageDataUrl);
+    const hasImg = Boolean(productSrc);
+    const img = productSrc ? `<img class=\"touch-media\" src=\"${productSrc}\" alt=\"${item.name}\" loading=\"lazy\" />` : '';
     return `<button class="touch-card ${hasImg ? 'with-image' : 'no-image'}" data-touch-prod="${item.id}" type="button">${img}<strong class="touch-card-title">${item.name}</strong><span class="touch-card-price">${money(item.price)}</span></button>`;
   };
   host.className = `touch-sales-layout cart-${cfg.cartPosition}`;
@@ -1220,52 +1314,22 @@ function forceRetryImageRef(value) {
 }
 
 function resolveImageSource(value) {
-  const raw = String(value || '');
+  const raw = String(value || '').trim();
   if (!raw) return '';
-  if (!raw.startsWith('idb:')) return raw;
-  const missingMeta = imageMissingRefs[raw];
-  if (missingMeta?.missing && (Date.now() - Number(missingMeta.lastAttemptAt || 0)) < 10000) return '';
-  if (imagePreviewCache[raw]) return imagePreviewCache[raw];
-  if (!imageLoadInFlight[raw]) {
-    imageLoadInFlight[raw] = (async () => {
-      try {
-        const blob = await imageDbGet(raw.slice(4));
-        if (blob) {
-          imagePreviewCache[raw] = URL.createObjectURL(blob);
-          clearImageMissingRef(raw);
-        } else markImageMissingRef(raw);
-      } catch {
-        markImageMissingRef(raw);
-      }
-      finally {
-        delete imageLoadInFlight[raw];
-        scheduleImageUiRefresh({ products: true, touch: true });
-      }
-    })();
-  }
+  if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:')) return raw;
   return '';
 }
 
-async function saveImageFileToStorage(file, previousValue = '') {
-  const dataUrl = await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result || ''));
-    r.onerror = () => reject(r.error || new Error('No se pudo leer la imagen.'));
-    r.readAsDataURL(file);
+async function saveImageFileToStorage(file, previousValue = '', options = {}) {
+  const kind = options.kind || 'product';
+  const key = options.key || uid();
+  return uploadImageToFirebaseStorage({
+    kind,
+    key,
+    file,
+    previousUrl: previousValue,
+    onProgress: options.onProgress || null
   });
-  const ref = `idb:${uid()}`;
-  await imageDbPut(ref.slice(4), file);
-  imagePreviewCache[ref] = URL.createObjectURL(file);
-  clearImageMissingRef(ref);
-  const prevKey = imageRefKey(previousValue);
-  if (prevKey) {
-    await imageDbDelete(prevKey);
-    if (imagePreviewCache[previousValue]) {
-      try { URL.revokeObjectURL(imagePreviewCache[previousValue]); } catch {}
-      delete imagePreviewCache[previousValue];
-    }
-  }
-  return dataUrl;
 }
 
 function imageUploadKey(kind, key) {
@@ -1375,13 +1439,18 @@ function openImageUploadForProduct(productId) {
     const f = input.files?.[0];
     if (input) input.value = '';
     beginImageUpload('product', productId, f, async (payload) => {
-      const previous = p.imageDataUrl;
+      const previous = p.imageUrl || p.imageDataUrl || '';
       try {
-        p.imageDataUrl = await saveImageFileToStorage(payload.file, previous);
+        p.imageUrl = await saveImageFileToStorage(payload.file, previous, {
+          kind: 'product',
+          key: p.id,
+          onProgress: (pct) => setImageUploadStatus('product', productId, { uploading: true, progress: Math.max(2, Math.min(100, pct)), error: '' })
+        });
+        delete p.imageDataUrl;
       } catch {
-        p.imageDataUrl = payload.dataUrl || previous;
+        p.imageUrl = previous;
       }
-      const ok = persistImageChange(() => { p.imageDataUrl = previous; });
+      const ok = persistImageChange(() => { p.imageUrl = previous; });
       if (!ok) {
         setImageUploadStatus('product', productId, { uploading: false, progress: 0, error: 'No se pudo guardar la imagen de forma persistente.' });
         setTimeout(() => setImageUploadStatus('product', productId, null), 2400);
@@ -1404,7 +1473,15 @@ function openImageUploadForCategory(categoryName) {
     if (input) input.value = '';
     beginImageUpload('category', categoryName, f, async (payload) => {
       const previous = state.categoryImages[categoryName] || '';
-      state.categoryImages[categoryName] = payload.dataUrl || previous;
+      try {
+        state.categoryImages[categoryName] = await saveImageFileToStorage(payload.file, previous, {
+          kind: 'category',
+          key: categoryName,
+          onProgress: (pct) => setImageUploadStatus('category', categoryName, { uploading: true, progress: Math.max(2, Math.min(100, pct)), error: '' })
+        });
+      } catch {
+        state.categoryImages[categoryName] = previous;
+      }
       const ok = persistImageChange(() => {
         if (previous) state.categoryImages[categoryName] = previous;
         else delete state.categoryImages[categoryName];
@@ -2615,8 +2692,8 @@ function renderProducts() {
   if (productsHead) productsHead.innerHTML = '<th>Categoría</th><th>Producto</th><th>Precio</th><th>Acciones</th><th>Imagen</th>';
   const categoriesHead = categoriesTable?.closest('table')?.querySelector('thead tr');
   if (categoriesHead) categoriesHead.innerHTML = '<th>Categoría</th><th>Acciones</th><th>Imagen</th>';
-  if (productsTable) productsTable.innerHTML = sorted.map((p) => { const st = getImageUploadStatus('product', p.id); const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen'; const prodSrc = resolveImageSource(p.imageDataUrl); const imageBlock = prodSrc ? `<div class=\"image-cell\"><img class=\"image-thumb\" src=\"${prodSrc}\" alt=\"${p.name}\" /><button class=\"danger\" data-prod-img-del=\"${p.id}\" type=\"button\">X</button></div>` : '<span class=\"muted\">Sin imagen</span>'; const err = st?.error ? `<div class=\"upload-error\">${st.error}</div>` : ''; const retry = renderImageRetryHint('product', p.id, p.imageDataUrl); return `<tr><td>${p.category || '-'}</td><td>${p.name}</td><td>${money(p.price)}</td><td><button class=\"secondary\" data-prod-edit=\"${p.id}\" type=\"button\">Editar</button> <button class=\"secondary\" data-prod-img=\"${p.id}\" type=\"button\" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> <button class=\"secondary\" data-prod-hide=\"${p.id}\" type=\"button\">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class=\"secondary\" data-prod-del=\"${p.id}\" type=\"button\">Eliminar</button></td><td>${imageBlock}${renderImageUploadProgress('product', p.id)}${err}${retry}</td></tr>`; }).join('');
-  if (categoriesTable) categoriesTable.innerHTML = (state.categories || []).map((c) => { const st = getImageUploadStatus('category', c); const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen'; const catSrc = resolveImageSource(state.categoryImages?.[c]); const imageBlock = catSrc ? `<div class=\"image-cell\"><img class=\"image-thumb\" src=\"${catSrc}\" alt=\"${c}\" /><button class=\"danger\" data-cat-img-del=\"${c}\" type=\"button\">X</button></div>` : '<span class=\"muted\">Sin imagen</span>'; const err = st?.error ? `<div class=\"upload-error\">${st.error}</div>` : ''; const retry = renderImageRetryHint('category', c, state.categoryImages?.[c]); return `<tr><td>${c}</td><td><button class=\"secondary\" data-cat-img=\"${c}\" type=\"button\" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> ${c === 'Todos' ? '' : `<button class=\"secondary\" data-cat-del=\"${c}\" type=\"button\">Eliminar</button>`}</td><td>${imageBlock}${renderImageUploadProgress('category', c)}${err}${retry}</td></tr>`; }).join('');
+  if (productsTable) productsTable.innerHTML = sorted.map((p) => { const st = getImageUploadStatus('product', p.id); const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen'; const prodSrc = resolveImageSource(p.imageUrl || p.imageDataUrl); const imageBlock = prodSrc ? `<div class=\"image-cell\"><img class=\"image-thumb\" src=\"${prodSrc}\" alt=\"${p.name}\" loading=\"lazy\" /><button class=\"danger\" data-prod-img-del=\"${p.id}\" type=\"button\">X</button></div>` : '<span class=\"muted\">Sin imagen</span>'; const err = st?.error ? `<div class=\"upload-error\">${st.error}</div>` : ''; const retry = renderImageRetryHint('product', p.id, p.imageUrl || p.imageDataUrl); return `<tr><td>${p.category || '-'}</td><td>${p.name}</td><td>${money(p.price)}</td><td><button class=\"secondary\" data-prod-edit=\"${p.id}\" type=\"button\">Editar</button> <button class=\"secondary\" data-prod-img=\"${p.id}\" type=\"button\" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> <button class=\"secondary\" data-prod-hide=\"${p.id}\" type=\"button\">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class=\"secondary\" data-prod-del=\"${p.id}\" type=\"button\">Eliminar</button></td><td>${imageBlock}${renderImageUploadProgress('product', p.id)}${err}${retry}</td></tr>`; }).join('');
+  if (categoriesTable) categoriesTable.innerHTML = (state.categories || []).map((c) => { const st = getImageUploadStatus('category', c); const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen'; const catSrc = resolveImageSource(state.categoryImages?.[c]); const imageBlock = catSrc ? `<div class=\"image-cell\"><img class=\"image-thumb\" src=\"${catSrc}\" alt=\"${c}\" loading=\"lazy\" /><button class=\"danger\" data-cat-img-del=\"${c}\" type=\"button\">X</button></div>` : '<span class=\"muted\">Sin imagen</span>'; const err = st?.error ? `<div class=\"upload-error\">${st.error}</div>` : ''; const retry = renderImageRetryHint('category', c, state.categoryImages?.[c]); return `<tr><td>${c}</td><td><button class=\"secondary\" data-cat-img=\"${c}\" type=\"button\" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> ${c === 'Todos' ? '' : `<button class=\"secondary\" data-cat-del=\"${c}\" type=\"button\">Eliminar</button>`}</td><td>${imageBlock}${renderImageUploadProgress('category', c)}${err}${retry}</td></tr>`; }).join('');
   if (productCategory) {
     productCategory.innerHTML = (state.categories || []).map((c) => `<option value="${c}">${c}</option>`).join('');
     if (selectedCategory && state.categories.includes(selectedCategory)) productCategory.value = selectedCategory;
@@ -4675,18 +4752,19 @@ function wireEvents() {
     const retryImg = e.target.closest('button[data-img-retry-kind="product"]');
     if (retryImg) {
       const p = state.products.find((x) => x.id === (retryImg.dataset.imgRetryKey || ''));
-      if (!p?.imageDataUrl) return;
-      forceRetryImageRef(p.imageDataUrl);
+      const imgRef = p?.imageUrl || p?.imageDataUrl;
+      if (!imgRef) return;
+      forceRetryImageRef(imgRef);
       return;
     }
     const delImg = e.target.closest('button[data-prod-img-del]');
     if (delImg) {
       const p = state.products.find((x) => x.id === delImg.dataset.prodImgDel);
       if (!p) return;
-      const previous = p.imageDataUrl;
+      const previous = p.imageUrl || p.imageDataUrl || '';
+      delete p.imageUrl;
       delete p.imageDataUrl;
-      imageDbDelete(imageRefKey(previous));
-      const ok = persistImageChange(() => { p.imageDataUrl = previous; });
+      const ok = persistImageChange(() => { if (previous) p.imageUrl = previous; });
       if (!ok) return;
       renderProducts();
       renderTouchSaleUi();
@@ -4712,7 +4790,7 @@ function wireEvents() {
       return;
     }
     const imgDelBtn = e.target.closest('button[data-cat-img-del]');
-    if (imgDelBtn) { const key = imgDelBtn.dataset.catImgDel || ''; const previous = state.categoryImages[key] || ''; delete state.categoryImages[key]; imageDbDelete(imageRefKey(previous)); const ok = persistImageChange(() => { if (previous) state.categoryImages[key] = previous; }); if (!ok) return; renderProducts(); renderTouchSaleUi(); return; }
+    if (imgDelBtn) { const key = imgDelBtn.dataset.catImgDel || ''; const previous = state.categoryImages[key] || ''; delete state.categoryImages[key]; const ok = persistImageChange(() => { if (previous) state.categoryImages[key] = previous; }); if (!ok) return; renderProducts(); renderTouchSaleUi(); return; }
     const b = e.target.closest('button[data-cat-del]');
     if (!b) return;
     const cat = b.dataset.catDel;
@@ -5079,6 +5157,17 @@ async function bootstrap() {
   if (!state.userSalesModes || typeof state.userSalesModes !== 'object') state.userSalesModes = {};
   if (!state.touchUiConfigByUser || typeof state.touchUiConfigByUser !== 'object') state.touchUiConfigByUser = {};
   if (!state.categoryImages || typeof state.categoryImages !== 'object') state.categoryImages = {};
+
+  (state.products || []).forEach((p) => {
+    if (p?.imageUrl && String(p.imageUrl).startsWith('data:')) delete p.imageUrl;
+    if (!p?.imageUrl && p?.imageDataUrl && !String(p.imageDataUrl).startsWith('data:')) p.imageUrl = p.imageDataUrl;
+    if (p?.imageDataUrl && String(p.imageDataUrl).startsWith('data:')) delete p.imageDataUrl;
+  });
+  Object.keys(state.categoryImages || {}).forEach((key) => {
+    const raw = String(state.categoryImages[key] || '');
+    if (raw.startsWith('data:') || raw.startsWith('idb:')) delete state.categoryImages[key];
+  });
+
   if (!state.orderCounters || typeof state.orderCounters !== 'object') state.orderCounters = {};
   if (!state.deletedRecordIds || typeof state.deletedRecordIds !== 'object') state.deletedRecordIds = { cashClosings: [], sales: [] };
   if (!Array.isArray(state.deletedRecordIds.cashClosings)) state.deletedRecordIds.cashClosings = [];
