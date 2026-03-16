@@ -414,7 +414,9 @@ const defaultBillingConfig = {
 function normalizeBillingSettings() {
   if (!state.settings || typeof state.settings !== 'object') state.settings = {};
   const merged = { ...defaultBillingConfig, ...(state.settings.billing || {}) };
-  merged.enabled = false;
+  merged.enabled = (typeof merged.enabled === 'string')
+    ? ['1', 'true', 'si', 'sí', 'on'].includes(String(merged.enabled).trim().toLowerCase())
+    : Boolean(merged.enabled);
   merged.paperWidthMm = Math.max(58, Math.min(120, Number(merged.paperWidthMm || 80)));
   merged.marginMm = Math.max(0, Math.min(20, Number(merged.marginMm || 4)));
   merged.title = String(merged.title || defaultBillingConfig.title);
@@ -432,7 +434,9 @@ function normalizeBillingSettings() {
   merged.message2SizePt = Math.max(7, Math.min(18, Number(merged.message2SizePt || 9)));
   merged.message2Bold = Boolean(merged.message2Bold);
   merged.message2Font = ['helvetica', 'times', 'courier'].includes(String(merged.message2Font || 'helvetica')) ? String(merged.message2Font || 'helvetica') : 'helvetica';
-  merged.autoPrintEnabled = false;
+  merged.autoPrintEnabled = (typeof merged.autoPrintEnabled === 'string')
+    ? ['1', 'true', 'si', 'sí', 'on'].includes(String(merged.autoPrintEnabled).trim().toLowerCase())
+    : Boolean(merged.autoPrintEnabled);
   state.settings.billing = merged;
   return merged;
 }
@@ -2949,7 +2953,8 @@ function estimateTicketHeightMm(data, cfg) {
   const hasDiscount = Number(data?.discount || 0) > 0;
   const paymentRows = invoicePaymentRows(data || {}, cfg?.currencySymbol || 'Bs').length;
   const logoBlock = cfg?.logoDataUrl ? Math.max(16, Number(cfg.logoSizeMm || 28) * 0.7) + Math.max(2, Number(cfg.logoTitleGapMm || 8)) : 0;
-  const base = 78 + logoBlock;
+  const topPadding = Math.max(6, Number(cfg?.marginMm || 4) + 4);
+  const base = 78 + logoBlock + topPadding;
   const itemsSection = 8 + (itemsCount * 6.2);
   const totalsSection = hasDiscount ? 25 : 20;
   const paymentSection = Math.max(10, paymentRows * 5.2);
@@ -2996,7 +3001,7 @@ async function openSaleInvoiceWindow(sale, options = {}) {
     const doc = new jsPDF({ unit: 'mm', format: [ticketWidth, ticketHeight] });
     const margin = Math.max(2, Number(cfg.marginMm || 4));
     const width = doc.internal.pageSize.getWidth();
-    let y = margin + 2;
+    let y = margin + 8;
     if (cfg.logoDataUrl) {
       try {
         const logoW = Math.max(12, Math.min(60, Number(cfg.logoSizeMm || 28)));
