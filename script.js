@@ -502,23 +502,11 @@ function refreshFinancialViews() {
 }
 
 function productsForLocalPersistence() {
-  return (state.products || []).map((p) => {
-    const copy = { ...p };
-    const rawLegacy = String(copy?.imageDataUrl || '');
-    const rawUrl = String(copy?.imageUrl || '');
-    if (rawLegacy.startsWith('data:')) delete copy.imageDataUrl;
-    if (rawUrl.startsWith('data:')) delete copy.imageUrl;
-    return copy;
-  });
+  return (state.products || []).map((p) => ({ ...p }));
 }
 
 function categoryImagesForLocalPersistence() {
-  const out = {};
-  Object.entries(state.categoryImages || {}).forEach(([key, value]) => {
-    const raw = String(value || '');
-    if (!raw.startsWith('data:')) out[key] = value;
-  });
-  return out;
+  return { ...(state.categoryImages || {}) };
 }
 
 function saveLocalState() {
@@ -1365,13 +1353,18 @@ function resolveImageSource(value) {
 async function saveImageFileToStorage(file, previousValue = '', options = {}) {
   const kind = options.kind || 'product';
   const key = options.key || uid();
-  return uploadImageToFirebaseStorage({
-    kind,
-    key,
-    file,
-    previousUrl: previousValue,
-    onProgress: options.onProgress || null
-  });
+  try {
+    return await uploadImageToFirebaseStorage({
+      kind,
+      key,
+      file,
+      previousUrl: previousValue,
+      onProgress: options.onProgress || null
+    });
+  } catch (err) {
+    const optimized = await optimizeImageForUpload(file, { maxSize: kind === 'category' ? 400 : 300 });
+    return blobToDataUrl(optimized.blob);
+  }
 }
 
 function imageUploadKey(kind, key) {
@@ -5207,13 +5200,13 @@ async function bootstrap() {
   if (!state.categoryImages || typeof state.categoryImages !== 'object') state.categoryImages = {};
 
   (state.products || []).forEach((p) => {
-    if (p?.imageUrl && String(p.imageUrl).startsWith('data:')) delete p.imageUrl;
+    if (p?.imageUrl && String(p.imageUrl).startsWith('idb:')) delete p.imageUrl;
     if (!p?.imageUrl && p?.imageDataUrl && !String(p.imageDataUrl).startsWith('data:')) p.imageUrl = p.imageDataUrl;
-    if (p?.imageDataUrl && String(p.imageDataUrl).startsWith('data:')) delete p.imageDataUrl;
+    if (p?.imageDataUrl && String(p.imageDataUrl).startsWith('idb:')) delete p.imageDataUrl;
   });
   Object.keys(state.categoryImages || {}).forEach((key) => {
     const raw = String(state.categoryImages[key] || '');
-    if (raw.startsWith('data:') || raw.startsWith('idb:')) delete state.categoryImages[key];
+    if (raw.startsWith('idb:')) delete state.categoryImages[key];
   });
 
   if (!state.orderCounters || typeof state.orderCounters !== 'object') state.orderCounters = {};
