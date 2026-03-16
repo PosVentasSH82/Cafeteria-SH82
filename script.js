@@ -1648,6 +1648,7 @@ function applySettings() {
       billingLogoCurrentText.textContent = 'Logo actual: No configurado';
     }
   }
+  renderBillingPreview();
   if (state.settings.logoDataUrl && homeLogo && logoPlaceholder) {
     homeLogo.src = state.settings.logoDataUrl;
     homeLogo.classList.remove('hidden');
@@ -1807,6 +1808,23 @@ async function downloadClosingPdf(closingId) {
       ['Otros', `${money(agg.others)} (${((agg.others/totalNet)*100).toFixed(1)}%)`]
     ];
     doc.autoTable({ startY: py, head: [['Método', 'Monto']], body: mpay, theme: 'grid' });
+    const historyRows = closingSalesHistoryRows(closing).map((sale) => [
+      new Date(sale.createdAt || sale.deletedAt).toLocaleString(),
+      `#${orderNumberLabel(sale.orderNumber)}`,
+      sale.payment || '-',
+      money(sale.total),
+      sale.user || '-',
+      sale.statusLabel || sale.status || 'OK'
+    ]);
+    doc.addPage();
+    doc.autoTable({ startY: 12, head: [['HISTORIAL DE VENTAS DE CIERRE', '', '', '', '', '']], body: historyRows.length ? historyRows : [['Sin historial de ventas.', '', '', '', '', '']], theme: 'grid', didParseCell: (hook) => {
+      if (hook.section !== 'body') return;
+      const cellText = String(hook.row?.raw?.[5] || '');
+      if (cellText.includes('ANULADA')) {
+        hook.cell.styles.textColor = [193, 18, 31];
+        hook.cell.styles.fontStyle = 'bold';
+      }
+    } });
     doc.save(`cierre_${String(closing.id || '').slice(-8)}.pdf`);
   } catch (err) {
     console.error('[pdf] cierre', err);
@@ -2064,7 +2082,11 @@ function renderClosingDetails(closingId) {
   const realDelivered = totalInBox - openingCash;
   const entries = (closing.outflowsSnapshot || []).filter((m) => m.direction === 'entrada');
   const exits = (closing.outflowsSnapshot || []).filter((m) => m.direction === 'salida');
-  if (closingSummaryText) closingSummaryText.innerHTML = `<div class="card"><h4>SECCIÓN 1 – INFORMACIÓN GENERAL</h4><p>Número de cierre: ${String(closing.id || '-').slice(-8)}</p><p>Fecha de apertura: ${openAt.toLocaleDateString()}</p><p>Hora de apertura: ${openAt.toLocaleTimeString()}</p><p>Fecha de cierre: ${closeAt.toLocaleDateString()}</p><p>Hora de cierre: ${closeAt.toLocaleTimeString()}</p><p>Usuario que abrió: ${closing.usuario_apertura || '-'}</p><p>Usuario que cerró: ${closing.usuario_cierre || '-'}</p><p>Tiempo total de caja abierta: ${formatDurationMs(closeAt - openAt)}</p></div><div class="card"><h4>Detalle para enviar</h4><p>Cambio inicial: ${money(openingCash)}</p><p>Valor efectivo de ventas: ${money(totalCash)}</p><p>Valor QR de ventas: ${money(totalQr)}</p><p>Salida efectivo: ${money(outCash)}</p><p>Entrada efectivo: ${money(inCash)}</p><p>Salida QR: ${money(outQr)}</p><p>Entrada QR: ${money(inQr)}</p><p>Valor final en caja: ${money(totalInBox)}</p><p>Valor final descontando cambio inicial: ${money(realDelivered)}</p></div><div class="card"><h4>SECCIÓN 2 – RESUMEN FINANCIERO</h4><p>Inicio de caja: ${money(openingCash)}</p><p>Total ventas brutas: ${money(grossSales)}</p><p>Total descuentos: ${money(totalDiscounts)}</p><p>Total ingresos netos: ${money(grossSales - totalDiscounts)}</p><p>Total en efectivo: ${money(totalCash)}</p><p>Total QR: ${money(totalQr)}</p><p>Total salidas externas efectivo: ${money(outCash)}</p><p>Total salidas externas QR: ${money(outQr)}</p><p>Total entradas externas efectivo: ${money(inCash)}</p><p>Total entradas externas QR: ${money(inQr)}</p><p>Total efectivo final: ${money(totalCashFinal)}</p><p>Total QR final: ${money(totalQrFinal)}</p><p>Valor total en caja (incluye valor de caja): ${money(totalInBox)}</p><p>Valor efectivo real de venta entregado: ${money(realDelivered)}</p></div><div class="card"><h4>Productos vendidos</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${agg.products.length ? agg.products.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="3">Sin productos vendidos.</td></tr>'}</tbody></table></div><div class="card"><h4>SECCIÓN 3 – MÉTRICAS OPERATIVAS</h4><p>Cantidad total de ventas: ${closing.salesCount || sales.length}</p><p>Total productos vendidos: ${agg.qtyTotal}</p><p>Ticket promedio: ${money(agg.avgTicket)}</p><p>Venta más alta: ${money(agg.saleMax)}</p><p>Venta más baja: ${money(agg.saleMin)}</p><p>Ventas eliminadas: ${deletedCount} · Mov. caja: ${outflowCount} · Pagos deuda: ${debtPaymentsCount}</p></div><div class="card"><h4>Detalle de entradas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${entries.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin entradas.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de salidas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${exits.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin salidas.</td></tr>'}</tbody></table></div>`;
+  const closingHistory = closingSalesHistoryRows(closing);
+  const closingHistoryRows = closingHistory.length
+    ? closingHistory.map((sale) => `<tr style="${sale.status === 'ANULADA' ? 'color:#c1121f;font-weight:700;' : ''}"><td>${new Date(sale.createdAt || sale.deletedAt).toLocaleString()}</td><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${sale.payment || '-'}</td><td>${money(sale.total)}</td><td>${sale.user || '-'}</td><td>${sale.statusLabel || sale.status}</td></tr>`).join('')
+    : '<tr><td colspan="6">Sin historial de ventas.</td></tr>';
+  if (closingSummaryText) closingSummaryText.innerHTML = `<div class="card"><h4>SECCIÓN 1 – INFORMACIÓN GENERAL</h4><p>Número de cierre: ${String(closing.id || '-').slice(-8)}</p><p>Fecha de apertura: ${openAt.toLocaleDateString()}</p><p>Hora de apertura: ${openAt.toLocaleTimeString()}</p><p>Fecha de cierre: ${closeAt.toLocaleDateString()}</p><p>Hora de cierre: ${closeAt.toLocaleTimeString()}</p><p>Usuario que abrió: ${closing.usuario_apertura || '-'}</p><p>Usuario que cerró: ${closing.usuario_cierre || '-'}</p><p>Tiempo total de caja abierta: ${formatDurationMs(closeAt - openAt)}</p></div><div class="card"><h4>Detalle para enviar</h4><p>Cambio inicial: ${money(openingCash)}</p><p>Valor efectivo de ventas: ${money(totalCash)}</p><p>Valor QR de ventas: ${money(totalQr)}</p><p>Salida efectivo: ${money(outCash)}</p><p>Entrada efectivo: ${money(inCash)}</p><p>Salida QR: ${money(outQr)}</p><p>Entrada QR: ${money(inQr)}</p><p>Valor final en caja: ${money(totalInBox)}</p><p>Valor final descontando cambio inicial: ${money(realDelivered)}</p></div><div class="card"><h4>SECCIÓN 2 – RESUMEN FINANCIERO</h4><p>Inicio de caja: ${money(openingCash)}</p><p>Total ventas brutas: ${money(grossSales)}</p><p>Total descuentos: ${money(totalDiscounts)}</p><p>Total ingresos netos: ${money(grossSales - totalDiscounts)}</p><p>Total en efectivo: ${money(totalCash)}</p><p>Total QR: ${money(totalQr)}</p><p>Total salidas externas efectivo: ${money(outCash)}</p><p>Total salidas externas QR: ${money(outQr)}</p><p>Total entradas externas efectivo: ${money(inCash)}</p><p>Total entradas externas QR: ${money(inQr)}</p><p>Total efectivo final: ${money(totalCashFinal)}</p><p>Total QR final: ${money(totalQrFinal)}</p><p>Valor total en caja (incluye valor de caja): ${money(totalInBox)}</p><p>Valor efectivo real de venta entregado: ${money(realDelivered)}</p></div><div class="card"><h4>Productos vendidos</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${agg.products.length ? agg.products.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="3">Sin productos vendidos.</td></tr>'}</tbody></table></div><div class="card"><h4>HISTORIAL DE VENTAS DE CIERRE</h4><table><thead><tr><th>Fecha</th><th>Nro pedido</th><th>Método</th><th>Total</th><th>Usuario</th><th>Estado</th></tr></thead><tbody>${closingHistoryRows}</tbody></table></div><div class="card"><h4>SECCIÓN 3 – MÉTRICAS OPERATIVAS</h4><p>Cantidad total de ventas: ${closing.salesCount || sales.length}</p><p>Total productos vendidos: ${agg.qtyTotal}</p><p>Ticket promedio: ${money(agg.avgTicket)}</p><p>Venta más alta: ${money(agg.saleMax)}</p><p>Venta más baja: ${money(agg.saleMin)}</p><p>Ventas eliminadas: ${deletedCount} · Mov. caja: ${outflowCount} · Pagos deuda: ${debtPaymentsCount}</p></div><div class="card"><h4>Detalle de entradas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${entries.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin entradas.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de salidas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${exits.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin salidas.</td></tr>'}</tbody></table></div>`;
   if (closingSalesTable) closingSalesTable.innerHTML = sales.length ? sales.map((sale) => `<tr><td>${new Date(sale.createdAt).toLocaleString()}</td><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${sale.payment}</td><td>${money(sale.total)}</td><td>${sale.user}</td></tr>`).join('') : '<tr><td colspan="5">Sin ventas.</td></tr>';
   if (closingProductsTable) {
     const aggProducts = agg.products;
@@ -2079,6 +2101,13 @@ function renderClosingDetails(closingId) {
       row.total += Number(sale.total || 0);
     });
     closingUsersTable.innerHTML = usersMap.size ? [...usersMap.entries()].map(([user, row]) => `<tr><td>${user}</td><td>${row.count}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="3">Sin ventas por usuario.</td></tr>';
+  }
+  const closingHistoryTable = ensureClosingSalesHistoryTable();
+  if (closingHistoryTable) {
+    const tableRows = closingHistory.length
+      ? closingHistory.map((sale) => `<tr style="${sale.status === 'ANULADA' ? 'color:#c1121f;font-weight:700;' : ''}"><td>${new Date(sale.createdAt || sale.deletedAt).toLocaleString()}</td><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${sale.payment || '-'}</td><td>${money(sale.total)}</td><td>${sale.user || '-'}</td><td style="${sale.status === 'ANULADA' ? 'color:#c1121f;font-weight:700;' : ''}">${sale.statusLabel || sale.status}</td></tr>`).join('')
+      : '<tr><td colspan="6">Sin historial de ventas.</td></tr>';
+    closingHistoryTable.innerHTML = tableRows;
   }
 }
 
@@ -2948,6 +2977,75 @@ function buildInvoiceData(sale) {
   };
 }
 
+function billingPreviewConfig() {
+  const cfg = normalizeBillingSettings();
+  return {
+    ...cfg,
+    enabled: Boolean(billingEnabledInput?.checked ?? cfg.enabled),
+    title: String(billingTitleInput?.value || state.settings?.title1 || cfg.title || 'Mi Cafetería'),
+    currencySymbol: String(billingCurrencyInput?.value || cfg.currencySymbol || 'Bs'),
+    marginMm: Number(billingMarginInput?.value || cfg.marginMm || 4),
+    message1: String(billingMessage1Input?.value || cfg.message1 || ''),
+    message2: String(billingMessage2Input?.value || cfg.message2 || ''),
+    titleSizePt: Number(billingTitleSizeInput?.value || cfg.titleSizePt || 12),
+    message1SizePt: Number(billingMessage1SizeInput?.value || cfg.message1SizePt || 9),
+    message2SizePt: Number(billingMessage2SizeInput?.value || cfg.message2SizePt || 9),
+    titleBold: Boolean(billingTitleBoldInput?.checked ?? cfg.titleBold),
+    message1Bold: Boolean(billingMessage1BoldInput?.checked ?? cfg.message1Bold),
+    message2Bold: Boolean(billingMessage2BoldInput?.checked ?? cfg.message2Bold),
+    logoDataUrl: String(cfg.logoDataUrl || '')
+  };
+}
+
+function ensureBillingPreviewUi() {
+  if (!billingConfigCard) return null;
+  let card = document.getElementById('billingPreviewCard');
+  if (card) return card;
+  card = document.createElement('div');
+  card.id = 'billingPreviewCard';
+  card.className = 'card';
+  card.innerHTML = '<h4>VISTA PREVIA</h4><p class="muted">Vista de factura de prueba (no registra venta).</p><div id="billingPreviewBody"></div>';
+  const anchor = billingConfigStatus || saveBillingConfigBtn;
+  anchor?.insertAdjacentElement('afterend', card);
+  return card;
+}
+
+function renderBillingPreview() {
+  const card = ensureBillingPreviewUi();
+  const body = document.getElementById('billingPreviewBody');
+  if (!card || !body) return;
+  const cfg = billingPreviewConfig();
+  const items = [
+    { name: 'Artículo 1', qty: 1, unit: 10, lineTotal: 10 },
+    { name: 'Artículo 2', qty: 1, unit: 20, lineTotal: 20 },
+    { name: 'Artículo 3', qty: 1, unit: 30, lineTotal: 30 }
+  ];
+  const subtotal = 60;
+  const total = 60;
+  const symbol = cfg.currencySymbol || 'Bs';
+  const marginPx = Math.max(8, Math.round(Number(cfg.marginMm || 4) * 2.6));
+  body.innerHTML = `<div style="max-width:360px;margin:0 auto;padding:${marginPx}px;border:1px dashed #9aa7b5;background:#fff;color:#1b2430;font-family:monospace;">
+    ${cfg.logoDataUrl ? `<div style="text-align:center;margin-bottom:8px;"><img src="${cfg.logoDataUrl}" alt="logo" style="max-width:120px;max-height:70px;object-fit:contain;"></div>` : ''}
+    <div style="text-align:center;font-size:${Math.max(11, Number(cfg.titleSizePt || 12))}pt;font-weight:${cfg.titleBold ? 700 : 400};margin-bottom:8px;">${escapeHtml(state.settings?.title1 || cfg.title || 'Mi Cafetería')}</div>
+    <div>No Recibo: 999</div>
+    <div>Fecha: ${new Date().toLocaleDateString()}</div>
+    <div>Hora: ${new Date().toLocaleTimeString()}</div>
+    <div>Usuario: demo</div>
+    <hr>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr><th style="text-align:left;">Producto</th><th>Cant</th><th>PU</th><th>PT</th></tr></thead><tbody>${items.map((it)=>`<tr><td>${escapeHtml(it.name)}</td><td style="text-align:right;">${it.qty}</td><td style="text-align:right;">${symbol} ${it.unit.toFixed(2)}</td><td style="text-align:right;">${symbol} ${it.lineTotal.toFixed(2)}</td></tr>`).join('')}</tbody></table>
+    <hr>
+    <div>Cantidad artículos: 3</div>
+    <div>Subtotal: ${symbol} ${subtotal.toFixed(2)}</div>
+    <div style="font-weight:700;">TOTAL: ${symbol} ${total.toFixed(2)}</div>
+    <hr>
+    <div>Método de pago: efectivo</div>
+    <div>Recibido: ${symbol} 60.00</div>
+    ${(cfg.message1 || cfg.message2) ? '<hr>' : ''}
+    ${cfg.message1 ? `<div style="text-align:center;font-size:${Math.max(9, Number(cfg.message1SizePt || 9))}pt;font-weight:${cfg.message1Bold ? 700 : 400};">${escapeHtml(cfg.message1)}</div>` : ''}
+    ${cfg.message2 ? `<div style="text-align:center;font-size:${Math.max(9, Number(cfg.message2SizePt || 9))}pt;font-weight:${cfg.message2Bold ? 700 : 400};">${escapeHtml(cfg.message2)}</div>` : ''}
+  </div>`;
+}
+
 function estimateTicketHeightMm(data, cfg) {
   const itemsCount = Math.max(1, Number(data?.items?.length || 0));
   const hasDiscount = Number(data?.discount || 0) > 0;
@@ -2985,6 +3083,35 @@ function invoicePaymentRows(sale, symbol) {
   return [['Método de pago', String(sale?.payment || '-')]];
 }
 
+function closingSalesHistoryRows(closing) {
+  const valid = Array.isArray(closing?.salesSnapshot) ? closing.salesSnapshot.map((sale) => ({
+    ...sale,
+    status: 'OK',
+    statusLabel: 'OK',
+    statusClass: ''
+  })) : [];
+  const deleted = Array.isArray(closing?.deletedSalesSnapshot) ? closing.deletedSalesSnapshot.map((sale) => ({
+    ...sale,
+    status: 'ANULADA',
+    statusLabel: `ANULADA · eliminado por: ${sale.deletedBy || '-'}`,
+    statusClass: 'sale-annulled'
+  })) : [];
+  return [...valid, ...deleted].sort((a, b) => new Date(a.createdAt || a.deletedAt || 0) - new Date(b.createdAt || b.deletedAt || 0));
+}
+
+function ensureClosingSalesHistoryTable() {
+  if (!closingUsersTable) return null;
+  let table = document.getElementById('closingSalesHistoryTable');
+  if (table) return table;
+  const wrap = document.createElement('div');
+  wrap.className = 'card';
+  wrap.innerHTML = '<h4>Historial de ventas de cierre</h4><table><thead><tr><th>Fecha</th><th>Nro pedido</th><th>Método</th><th>Total</th><th>Usuario</th><th>Estado</th></tr></thead><tbody id="closingSalesHistoryTable"></tbody></table>';
+  const usersTableWrap = closingUsersTable.closest('table');
+  usersTableWrap?.insertAdjacentElement('afterend', wrap);
+  table = document.getElementById('closingSalesHistoryTable');
+  return table;
+}
+
 async function openSaleInvoiceWindow(sale, options = {}) {
   if (!sale) return;
   const startedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -3012,27 +3139,32 @@ async function openSaleInvoiceWindow(sale, options = {}) {
     }
     doc.setFont(String(cfg.titleFont || 'helvetica'), cfg.titleBold ? 'bold' : 'normal');
     doc.setFontSize(Math.max(9, Number(cfg.titleSizePt || 12)));
-    doc.text(String(cfg.title || 'RECIBO'), width / 2, y, { align: 'center', maxWidth: width - (margin * 2) });
+    doc.text(String(state.settings?.title1 || cfg.title || 'RECIBO'), width / 2, y, { align: 'center', maxWidth: width - (margin * 2) });
     y += 5;
     const dt = new Date(data.createdAt || Date.now());
     doc.setFontSize(9);
     doc.text(`No Recibo: ${orderNumberLabel(data.orderNumber)}`, margin, y); y += 4;
-    doc.text(`Fecha: ${dt.toLocaleDateString()} ${dt.toLocaleTimeString()}`, margin, y); y += 4;
+    doc.text(`Fecha: ${dt.toLocaleDateString()}`, margin, y); y += 4;
+    doc.text(`Hora: ${dt.toLocaleTimeString()}`, margin, y); y += 4;
     doc.text(`Usuario: ${data.user || '-'}`, margin, y); y += 3;
     doc.setLineDashPattern([1, 1], 0);
     doc.line(margin, y + 1, width - margin, y + 1); y += 4;
 
-    const itemRows = (data.items || []).map((it) => [String(it.name || ''), String(it.qty || 0), `${symbol} ${Number(it.lineTotal || 0).toFixed(2)}`]);
-    doc.autoTable({ startY: y, margin: { left: margin, right: margin }, head: [['Producto', 'Cant', 'Subtotal']], body: itemRows, styles: { fontSize: 8, cellPadding: 1.2 }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } } });
+    const itemRows = (data.items || []).map((it) => [String(it.name || ''), String(it.qty || 0), `${symbol} ${Number(it.unit || 0).toFixed(2)}`, `${symbol} ${Number(it.lineTotal || 0).toFixed(2)}`]);
+    doc.autoTable({ startY: y, margin: { left: margin, right: margin }, head: [['Producto', 'Cant', 'P. Unitario', 'P. Total']], body: itemRows, styles: { fontSize: 8, cellPadding: 1.2 }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } } });
     y = doc.lastAutoTable.finalY + 2;
     const totalsRows = [['Cantidad artículos', String(Number(data.totalItems || 0))], ['Subtotal', `${symbol} ${Number(data.subtotal || 0).toFixed(2)}`]];
-    if (Number(data.discount || 0) > 0) totalsRows.push(['Descuento', `${symbol} ${Number(data.discount || 0).toFixed(2)}`]);
+    if (Number(data.discount || 0) > 0) totalsRows.push(['Descuento', `${symbol} ${Number(data.discount || 0).toFixed(2)}`], ['Total final', `${symbol} ${Number(data.total || 0).toFixed(2)}`]);
     doc.autoTable({ startY: y, margin: { left: margin, right: margin }, body: totalsRows, styles: { fontSize: 9, cellPadding: 1.1 }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right' } } });
     y = doc.lastAutoTable.finalY + 1;
     doc.setLineDashPattern([1, 1], 0);
     doc.line(margin, y, width - margin, y); y += 1.2;
-    doc.autoTable({ startY: y, margin: { left: margin, right: margin }, body: [['TOTAL', `${symbol} ${Number(data.total || 0).toFixed(2)}`]], styles: { fontSize: 11, cellPadding: 1.3, fontStyle: 'bold' }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } } });
-    y = doc.lastAutoTable.finalY + 2;
+    if (Number(data.discount || 0) <= 0) {
+      doc.autoTable({ startY: y, margin: { left: margin, right: margin }, body: [['TOTAL', `${symbol} ${Number(data.total || 0).toFixed(2)}`]], styles: { fontSize: 11, cellPadding: 1.3, fontStyle: 'bold' }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } } });
+      y = doc.lastAutoTable.finalY + 2;
+    } else {
+      y += 2;
+    }
     doc.setLineDashPattern([1, 1], 0);
     doc.line(margin, y, width - margin, y); y += 2;
 
@@ -3082,11 +3214,20 @@ function renderSalesHistory() {
     salesUserFilter.innerHTML = users.join('');
     salesUserFilter.value = prev;
   }
-  let list = salesForActiveCashBox().filter((sale) => !sale.carryOverDebt).slice();
+  const validSales = salesForActiveCashBox().filter((sale) => !sale.carryOverDebt).map((sale) => ({ ...sale, saleStatus: 'OK', saleStatusClass: '' }));
+  const deletedSales = (state.deletedSales || []).filter((sale) => !state.activeCashBoxId || sale.cashBoxId === state.activeCashBoxId).map((sale) => ({ ...sale, saleStatus: 'ANULADA', saleStatusClass: 'sale-annulled' }));
+  let list = [...validSales, ...deletedSales].slice();
   const searchOrder = (salesOrderSearchInput?.value || '').trim();
   if (userFilter) list = list.filter((s) => s.user === userFilter);
   if (searchOrder) list = list.filter((s) => String(s.orderNumber || '').includes(searchOrder));
-  salesTable.innerHTML = list.length ? list.map((sale) => `<tr><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${new Date(sale.createdAt).toLocaleString()}</td><td>${money(sale.total)}</td><td>${sale.payment}</td><td><button type="button" class="secondary" data-sale-act="view" data-sale-id="${sale.id}">Ver Venta</button> <button type="button" class="secondary" data-sale-act="invoice" data-sale-id="${sale.id}">Ver factura</button>${hasPermission('deleteSales') ? ` <button type="button" class="secondary" data-sale-act="edit" data-sale-id="${sale.id}">Editar venta</button> <button type="button" class="secondary" data-sale-act="del" data-sale-id="${sale.id}">Eliminar venta</button>` : ''}</td><td>${sale.user}</td></tr>`).join('') : '<tr><td colspan="6">Sin ventas.</td></tr>';
+  list.sort((a, b) => new Date(b.createdAt || b.deletedAt || 0) - new Date(a.createdAt || a.deletedAt || 0));
+  salesTable.innerHTML = list.length ? list.map((sale) => {
+    const isAnnulled = sale.saleStatus === 'ANULADA';
+    const actions = isAnnulled
+      ? `<span class="muted">Venta anulada${sale.deletedBy ? ` · eliminado por ${sale.deletedBy}` : ''}</span>`
+      : `<button type="button" class="secondary" data-sale-act="view" data-sale-id="${sale.id}">Ver Venta</button> <button type="button" class="secondary" data-sale-act="invoice" data-sale-id="${sale.id}">Ver factura</button>${hasPermission('deleteSales') ? ` <button type="button" class="secondary" data-sale-act="edit" data-sale-id="${sale.id}">Editar venta</button> <button type="button" class="secondary" data-sale-act="del" data-sale-id="${sale.id}">Eliminar venta</button>` : ''}`;
+    return `<tr style="${isAnnulled ? 'color:#c1121f;font-weight:700;' : ''}"><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${new Date(sale.createdAt || sale.deletedAt).toLocaleString()}</td><td>${money(sale.total)}</td><td>${sale.payment}</td><td style="${isAnnulled ? 'color:#c1121f;font-weight:700;' : ''}">${sale.saleStatus}</td><td>${actions}</td><td>${sale.user}</td></tr>`;
+  }).join('') : '<tr><td colspan="7">Sin ventas.</td></tr>';
 }
 
 
@@ -3953,6 +4094,12 @@ async function registerSale() {
   renderOrders(false);
   setMsg(saleMessage, 'Venta registrada correctamente.');
   refreshFinancialViews();
+  const billCfg = billingSettings();
+  if (billCfg.enabled) {
+    Promise.resolve(openSaleInvoiceWindow(sale, { autoPrint: Boolean(billCfg.autoPrintEnabled) })).catch((err) => {
+      console.error('[invoice] auto-open after sale failed', err);
+    });
+  }
   renderWarehouse();
   if (saleSuccessTitle) saleSuccessTitle.textContent = `Venta realizada exitosamente · Pedido #${orderNumberLabel(sale.orderNumber)}`;
   saleProceedReady = false;
@@ -4633,14 +4780,20 @@ function wireEvents() {
     const active = Boolean(billingEnabledInput?.checked);
     if (billingModeIndicator) billingModeIndicator.textContent = `Estado actual: ${active ? 'ACTIVADO' : 'DESACTIVADO'}`;
     if (billingToggleActionBtn) billingToggleActionBtn.textContent = active ? 'Desactivar' : 'Activar';
+    renderBillingPreview();
   });
   billingAutoPrintToggleActionBtn?.addEventListener('click', () => {
     if (billingAutoPrintInput) billingAutoPrintInput.checked = !billingAutoPrintInput.checked;
     const active = Boolean(billingAutoPrintInput?.checked);
     if (billingAutoPrintIndicator) billingAutoPrintIndicator.textContent = `Estado actual: ${active ? 'ACTIVADO' : 'DESACTIVADO'}`;
     if (billingAutoPrintToggleActionBtn) billingAutoPrintToggleActionBtn.textContent = active ? 'Desactivar' : 'Activar';
+    renderBillingPreview();
   });
-  saveBillingConfigBtn?.addEventListener('click', saveBillingSettings);
+  saveBillingConfigBtn?.addEventListener('click', async () => { await saveBillingSettings(); renderBillingPreview(); });
+  [billingEnabledInput, billingTitleInput, billingCurrencyInput, billingMarginInput, billingMessage1Input, billingMessage2Input, billingLogoSizeInput, billingTitleSizeInput, billingTitleBoldInput, billingMessage1SizeInput, billingMessage1BoldInput, billingMessage2SizeInput, billingMessage2BoldInput].forEach((el) => {
+    el?.addEventListener('input', renderBillingPreview);
+    el?.addEventListener('change', renderBillingPreview);
+  });
   removeBillingLogoBtn?.addEventListener('click', () => {
     const billing = normalizeBillingSettings();
     billing.logoDataUrl = '';
@@ -4648,6 +4801,7 @@ function wireEvents() {
     persist();
     if (billingConfigStatus) billingConfigStatus.textContent = 'Logo de facturación eliminado.';
     applySettings();
+    renderBillingPreview();
   });
   openDatabaseConfigBtn?.classList.add('hidden');
   syncNowBtn?.addEventListener('click', async () => { try { await syncToCloud(); if (syncStatus) syncStatus.textContent = 'Sincronizado con Firebase.'; } catch {} });
