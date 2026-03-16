@@ -576,19 +576,48 @@ function cloudChildUrl(childPath = '') {
 }
 
 
-function inferStorageBucket() {
-  const configured = String(state.settings?.firebaseStorageBucket || '').trim();
-  if (configured) return configured;
+function inferStorageProjectId() {
   const dbUrl = String(state.settings?.firebaseDbUrl || defaultCloudConfig.firebaseDbUrl || '');
   const m = dbUrl.match(/^https:\/\/([^.]+)\./i);
-  if (!m) return '';
-  return `${m[1]}.appspot.com`;
+  const hostId = m ? String(m[1] || '').trim() : '';
+  if (!hostId) return '';
+  return hostId.replace(/-default-rtdb$/i, '');
+}
+
+function inferStorageBucketCandidates() {
+  const configured = String(state.settings?.firebaseStorageBucket || '').trim();
+  if (configured) return [configured];
+  const projectId = inferStorageProjectId();
+  if (!projectId) return [];
+  return [`${projectId}.firebasestorage.app`, `${projectId}.appspot.com`];
+}
+
+function inferStorageBucket() {
+  return inferStorageBucketCandidates()[0] || '';
+}
+
+let resolvedStorageBucket = '';
+async function resolveStorageBucket() {
+  if (resolvedStorageBucket) return resolvedStorageBucket;
+  const candidates = inferStorageBucketCandidates();
+  if (!candidates.length) return '';
+  for (const bucket of candidates) {
+    try {
+      const res = await fetch(`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket)}/o?maxResults=1`, { method: 'GET' });
+      if (res.status !== 404) {
+        resolvedStorageBucket = bucket;
+        return bucket;
+      }
+    } catch {}
+  }
+  return candidates[0] || '';
 }
 
 let firebaseStorageReadyPromise = null;
-async function ensureFirebaseStorageSdk() {
+let firebaseStorageBucketBound = '';
+async function ensureFirebaseStorageSdk(bucketOverride = '') {
   if (window.firebase?.storage) return window.firebase;
-  if (firebaseStorageReadyPromise) return firebaseStorageReadyPromise;
+  if (firebaseStorageReadyPromise && (!bucketOverride || bucketOverride === firebaseStorageBucketBound)) return firebaseStorageReadyPromise;
   const loadScript = (src) => new Promise((resolve, reject) => {
     const existing = document.querySelector(`script[src="${src}"]`);
     if (existing) {
@@ -605,11 +634,12 @@ async function ensureFirebaseStorageSdk() {
     document.head.appendChild(script);
   });
   firebaseStorageReadyPromise = (async () => {
-    await withTimeout(loadScript('https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js'), 12000, 'No se pudo cargar Firebase App SDK.');
-    await withTimeout(loadScript('https://www.gstatic.com/firebasejs/10.12.4/firebase-storage-compat.js'), 12000, 'No se pudo cargar Firebase Storage SDK.');
+    await withTimeout(loadScript('https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js'), 7000, 'No se pudo cargar Firebase App SDK.');
+    await withTimeout(loadScript('https://www.gstatic.com/firebasejs/10.12.4/firebase-storage-compat.js'), 7000, 'No se pudo cargar Firebase Storage SDK.');
     if (!window.firebase) throw new Error('Firebase SDK no disponible.');
-    const bucket = inferStorageBucket();
+    const bucket = bucketOverride || inferStorageBucket();
     if (!bucket) throw new Error('No se pudo inferir firebaseStorageBucket.');
+    firebaseStorageBucketBound = bucket;
     const appName = 'cafeteria-storage';
     const existing = window.firebase.apps.find((a) => a.name === appName);
     const app = existing || window.firebase.initializeApp({ storageBucket: bucket }, appName);
@@ -650,47 +680,30 @@ async function optimizeImageForUpload(file, { maxSize = 300 } = {}) {
 }
 
 async function uploadImageToFirebaseStorage({ kind, key, file, previousUrl = '', onProgress = null }) {
-  const bucket = inferStorageBucket();
+  const bucket = await resolveStorageBucket();
   if (!bucket) throw new Error('No se pudo determinar el bucket de Firebase Storage.');
   const safeKey = normalizeImagePathSegment(key);
   const ext = file.type.includes('png') ? 'webp' : (file.type.includes('jpeg') || file.type.includes('jpg') ? 'jpg' : 'webp');
   const folder = kind === 'category' ? 'categorias' : 'productos';
   const path = `${folder}/${safeKey}-${Date.now()}.${ext}`;
   const optimized = await optimizeImageForUpload(file, { maxSize: kind === 'category' ? 400 : 300 });
-  const authParam = state.settings?.firebaseDbToken ? `&auth=${encodeURIComponent(state.settings.firebaseDbToken)}` : '';
-  const uploadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o?name=${encodeURIComponent(path)}${authParam}`;
-  const uploadResult = await withTimeout(new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', uploadUrl, true);
-    xhr.setRequestHeader('Content-Type', optimized.contentType || 'application/octet-stream');
-    xhr.upload.onprogress = (event) => {
+  const { storage } = await ensureFirebaseStorageSdk(bucket);
+  const ref = storage.ref(path);
+  const task = ref.put(optimized.blob, { contentType: optimized.contentType, cacheControl: 'public,max-age=31536000' });
+  await withTimeout(new Promise((resolve, reject) => {
+    task.on('state_changed', (snap) => {
       if (!onProgress) return;
-      if (!event.lengthComputable) return;
-      const pct = Math.round((event.loaded / event.total) * 100);
-      onProgress(pct);
-    };
-    xhr.onerror = () => reject(new Error('Error de red al subir imagen.'));
-    xhr.ontimeout = () => reject(new Error('Tiempo de espera agotado al subir imagen.'));
-    xhr.timeout = 45000;
-    xhr.onload = () => {
-      if (xhr.status < 200 || xhr.status >= 300) {
-        return reject(new Error(`Error Firebase Storage (${xhr.status}). Verifica reglas de Storage.`));
-      }
-      try { resolve(JSON.parse(xhr.responseText || '{}')); }
-      catch { reject(new Error('Respuesta inválida de Firebase Storage.')); }
-    };
-    xhr.send(optimized.blob);
-  }), 50000, 'La subida tardó demasiado. Verifica tu conexión o reglas de Firebase Storage.');
-  const token = String(uploadResult?.downloadTokens || '').split(',')[0].trim();
-  const encodedPath = encodeURIComponent(path);
-  const downloadUrl = token
-    ? `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media&token=${encodeURIComponent(token)}`
-    : `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
+      const total = Number(snap.totalBytes || 0);
+      const loaded = Number(snap.bytesTransferred || 0);
+      onProgress(total > 0 ? Math.round((loaded / total) * 100) : 0);
+    }, (err) => reject(err), () => resolve());
+  }), 20000, 'La subida tardó demasiado. Verifica tu conexión o reglas de Firebase Storage.');
+  const downloadUrl = await withTimeout(ref.getDownloadURL(), 8000, 'No se pudo obtener URL pública de la imagen.');
   try {
     if (previousUrl && previousUrl.includes('/o/')) {
       const oldPath = decodeURIComponent(previousUrl.split('/o/')[1]?.split('?')[0] || '');
       if (oldPath) {
-        await fetch(`https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(oldPath)}${authParam}`, { method: 'DELETE' });
+        await storage.ref(oldPath).delete();
       }
     }
   } catch {}
