@@ -3050,14 +3050,17 @@ function estimateTicketHeightMm(data, cfg) {
   const itemsCount = Math.max(1, Number(data?.items?.length || 0));
   const hasDiscount = Number(data?.discount || 0) > 0;
   const paymentRows = invoicePaymentRows(data || {}, cfg?.currencySymbol || 'Bs').length;
-  const logoBlock = cfg?.logoDataUrl ? Math.max(16, Number(cfg.logoSizeMm || 28) * 0.7) + Math.max(2, Number(cfg.logoTitleGapMm || 8)) : 0;
-  const topPadding = Math.max(6, Number(cfg?.marginMm || 4) + 4);
-  const base = 78 + logoBlock + topPadding;
-  const itemsSection = 8 + (itemsCount * 6.2);
-  const totalsSection = hasDiscount ? 25 : 20;
-  const paymentSection = Math.max(10, paymentRows * 5.2);
-  const messages = (cfg?.message1 ? 6 : 0) + (cfg?.message2 ? 6 : 0);
-  return Math.max(180, Math.min(5000, base + itemsSection + totalsSection + paymentSection + messages + 60));
+  const logoBlock = cfg?.logoDataUrl ? Math.max(18, Number(cfg.logoSizeMm || 28) * 0.78) + Math.max(3, Number(cfg.logoTitleGapMm || 8) * 0.6) : 0;
+  const topBlock = 34;
+  const tableHeader = 9;
+  const perItemRow = 6.4;
+  const summaryRows = hasDiscount ? 4 : 3;
+  const summaryBlock = 6 + (summaryRows * 5.4);
+  const paymentBlock = 6 + (Math.max(2, paymentRows) * 5.2);
+  const messageBlock = (cfg?.message1 ? 6 : 0) + (cfg?.message2 ? 6 : 0) + 10;
+  const margin = Math.max(3, Number(cfg?.marginMm || 4));
+  const raw = (margin * 2) + logoBlock + topBlock + tableHeader + (itemsCount * perItemRow) + summaryBlock + paymentBlock + messageBlock;
+  return Math.max(170, Math.min(900, raw));
 }
 
 function invoicePaymentRows(sale, symbol) {
@@ -3126,61 +3129,107 @@ async function openSaleInvoiceWindow(sale, options = {}) {
     const ticketWidth = Math.max(58, Math.min(120, Number(cfg.paperWidthMm || 80)));
     const ticketHeight = estimateTicketHeightMm(data, cfg);
     const doc = new jsPDF({ unit: 'mm', format: [ticketWidth, ticketHeight] });
-    const margin = Math.max(2, Number(cfg.marginMm || 4));
-    const width = doc.internal.pageSize.getWidth();
-    let y = margin + 8;
+    const margin = Math.max(3, Number(cfg.marginMm || 4));
+    const contentWidth = ticketWidth - (margin * 2);
+    const writeLine = (left, right, y, opts = {}) => {
+      const fontSize = Number(opts.size || 9);
+      doc.setFontSize(fontSize);
+      doc.setFont('helvetica', opts.bold ? 'bold' : 'normal');
+      doc.text(String(left || ''), margin, y, { maxWidth: contentWidth * 0.62 });
+      if (right !== undefined && right !== null && String(right) !== '') {
+        doc.text(String(right), ticketWidth - margin, y, { align: 'right', maxWidth: contentWidth * 0.38 });
+      }
+      return y + Number(opts.step || 4.5);
+    };
+
+    let y = margin + 6;
     if (cfg.logoDataUrl) {
       try {
-        const logoW = Math.max(12, Math.min(60, Number(cfg.logoSizeMm || 28)));
-        const logoH = Math.max(8, logoW * 0.7);
-        doc.addImage(cfg.logoDataUrl, imageFormat, (width / 2) - (logoW / 2), y, logoW, logoH);
-        y += logoH + Math.max(2, Number(cfg.logoTitleGapMm || 8));
+        const logoW = Math.max(12, Math.min(56, Number(cfg.logoSizeMm || 28)));
+        const logoH = Math.max(10, logoW * 0.72);
+        doc.addImage(cfg.logoDataUrl, imageFormat, (ticketWidth / 2) - (logoW / 2), y, logoW, logoH);
+        y += logoH + Math.max(2.5, Number(cfg.logoTitleGapMm || 8) * 0.45);
       } catch {}
     }
+
     doc.setFont(String(cfg.titleFont || 'helvetica'), cfg.titleBold ? 'bold' : 'normal');
-    doc.setFontSize(Math.max(9, Number(cfg.titleSizePt || 12)));
-    doc.text(String(state.settings?.title1 || cfg.title || 'RECIBO'), width / 2, y, { align: 'center', maxWidth: width - (margin * 2) });
-    y += 5;
+    doc.setFontSize(Math.max(10, Number(cfg.titleSizePt || 12)));
+    doc.text(String(state.settings?.title1 || cfg.title || 'RECIBO'), ticketWidth / 2, y, { align: 'center', maxWidth: contentWidth });
+    y += 6;
+
     const dt = new Date(data.createdAt || Date.now());
-    doc.setFontSize(9);
-    doc.text(`No Recibo: ${orderNumberLabel(data.orderNumber)}`, margin, y); y += 4;
-    doc.text(`Fecha: ${dt.toLocaleDateString()}`, margin, y); y += 4;
-    doc.text(`Hora: ${dt.toLocaleTimeString()}`, margin, y); y += 4;
-    doc.text(`Usuario: ${data.user || '-'}`, margin, y); y += 3;
-    doc.setLineDashPattern([1, 1], 0);
-    doc.line(margin, y + 1, width - margin, y + 1); y += 4;
+    y = writeLine('No Recibo:', orderNumberLabel(data.orderNumber), y, { step: 4.2 });
+    y = writeLine('Fecha:', dt.toLocaleDateString(), y, { step: 4.2 });
+    y = writeLine('Hora:', dt.toLocaleTimeString(), y, { step: 4.2 });
+    y = writeLine('Usuario:', data.user || '-', y, { step: 4.5 });
 
-    const itemRows = (data.items || []).map((it) => [String(it.name || ''), String(it.qty || 0), `${symbol} ${Number(it.unit || 0).toFixed(2)}`, `${symbol} ${Number(it.lineTotal || 0).toFixed(2)}`]);
-    doc.autoTable({ startY: y, margin: { left: margin, right: margin }, head: [['Producto', 'Cant', 'P. Unitario', 'P. Total']], body: itemRows, styles: { fontSize: 8, cellPadding: 1.2 }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } } });
-    y = doc.lastAutoTable.finalY + 2;
-    const totalsRows = [['Cantidad artículos', String(Number(data.totalItems || 0))], ['Subtotal', `${symbol} ${Number(data.subtotal || 0).toFixed(2)}`]];
-    if (Number(data.discount || 0) > 0) totalsRows.push(['Descuento', `${symbol} ${Number(data.discount || 0).toFixed(2)}`], ['Total final', `${symbol} ${Number(data.total || 0).toFixed(2)}`]);
-    doc.autoTable({ startY: y, margin: { left: margin, right: margin }, body: totalsRows, styles: { fontSize: 9, cellPadding: 1.1 }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right' } } });
-    y = doc.lastAutoTable.finalY + 1;
     doc.setLineDashPattern([1, 1], 0);
-    doc.line(margin, y, width - margin, y); y += 1.2;
-    if (Number(data.discount || 0) <= 0) {
-      doc.autoTable({ startY: y, margin: { left: margin, right: margin }, body: [['TOTAL', `${symbol} ${Number(data.total || 0).toFixed(2)}`]], styles: { fontSize: 11, cellPadding: 1.3, fontStyle: 'bold' }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } } });
-      y = doc.lastAutoTable.finalY + 2;
+    doc.line(margin, y, ticketWidth - margin, y);
+    y += 1.5;
+
+    const itemRows = (data.items || []).map((it) => [
+      String(it.name || ''),
+      String(it.qty || 0),
+      `${symbol} ${Number(it.unit || 0).toFixed(2)}`,
+      `${symbol} ${Number(it.lineTotal || 0).toFixed(2)}`
+    ]);
+    doc.autoTable({
+      startY: y,
+      margin: { left: margin, right: margin },
+      head: [['Producto', 'Cant', 'PU', 'PT']],
+      body: itemRows,
+      styles: { fontSize: 8.3, cellPadding: 1.2, overflow: 'linebreak' },
+      headStyles: { fontStyle: 'bold', lineWidth: 0.1, lineColor: [190, 190, 190] },
+      theme: 'plain',
+      pageBreak: 'auto',
+      rowPageBreak: 'avoid',
+      columnStyles: { 0: { cellWidth: 'auto' }, 1: { halign: 'right', cellWidth: 10 }, 2: { halign: 'right', cellWidth: 20 }, 3: { halign: 'right', cellWidth: 20 } }
+    });
+    y = (doc.lastAutoTable?.finalY || y) + 2;
+
+    doc.setLineDashPattern([1, 1], 0);
+    doc.line(margin, y, ticketWidth - margin, y);
+    y += 4;
+
+    y = writeLine('Cantidad artículos:', String(Number(data.totalItems || 0)), y);
+    y = writeLine('Subtotal:', `${symbol} ${Number(data.subtotal || 0).toFixed(2)}`, y);
+    if (Number(data.discount || 0) > 0) {
+      y = writeLine('Descuento:', `${symbol} ${Number(data.discount || 0).toFixed(2)}`, y);
+      y = writeLine('TOTAL:', `${symbol} ${Number(data.total || 0).toFixed(2)}`, y, { bold: true, size: 10, step: 5 });
     } else {
-      y += 2;
+      y = writeLine('TOTAL:', `${symbol} ${Number(data.total || 0).toFixed(2)}`, y, { bold: true, size: 10, step: 5 });
     }
-    doc.setLineDashPattern([1, 1], 0);
-    doc.line(margin, y, width - margin, y); y += 2;
 
-    doc.autoTable({ startY: y, margin: { left: margin, right: margin }, body: invoicePaymentRows(sale, symbol), styles: { fontSize: 8.5, cellPadding: 1.0 }, theme: 'plain', pageBreak: 'avoid', rowPageBreak: 'avoid', columnStyles: { 1: { halign: 'right' } } });
-    y = doc.lastAutoTable.finalY + 3;
     doc.setLineDashPattern([1, 1], 0);
-    doc.line(margin, y, width - margin, y); y += 5;
-    doc.setFont(String(cfg.message1Font || 'helvetica'), cfg.message1Bold ? 'bold' : 'normal');
-    doc.setFontSize(Math.max(7, Number(cfg.message1SizePt || 9)));
-    if (cfg.message1) { doc.text(String(cfg.message1), width / 2, y, { align: 'center', maxWidth: width - (margin * 2) }); y += 5; }
-    doc.setFont(String(cfg.message2Font || 'helvetica'), cfg.message2Bold ? 'bold' : 'normal');
-    doc.setFontSize(Math.max(7, Number(cfg.message2SizePt || 9)));
-    if (cfg.message2) doc.text(String(cfg.message2), width / 2, y, { align: 'center', maxWidth: width - (margin * 2) });
+    doc.line(margin, y, ticketWidth - margin, y);
+    y += 4;
 
-    const finalHeight = Math.max(160, Math.min(5000, y + margin + 18));
-    if (doc.internal?.pageSize?.setHeight) doc.internal.pageSize.setHeight(finalHeight);
+    const paymentRows = invoicePaymentRows(sale, symbol);
+    for (const [k, v] of paymentRows) y = writeLine(k, v, y, { size: 8.8, step: 4.2 });
+
+    if (cfg.message1 || cfg.message2) {
+      doc.setLineDashPattern([1, 1], 0);
+      doc.line(margin, y, ticketWidth - margin, y);
+      y += 5;
+    }
+
+    if (cfg.message1) {
+      doc.setFont(String(cfg.message1Font || 'helvetica'), cfg.message1Bold ? 'bold' : 'normal');
+      doc.setFontSize(Math.max(7, Number(cfg.message1SizePt || 9)));
+      doc.text(String(cfg.message1), ticketWidth / 2, y, { align: 'center', maxWidth: contentWidth });
+      y += 5;
+    }
+    if (cfg.message2) {
+      doc.setFont(String(cfg.message2Font || 'helvetica'), cfg.message2Bold ? 'bold' : 'normal');
+      doc.setFontSize(Math.max(7, Number(cfg.message2SizePt || 9)));
+      doc.text(String(cfg.message2), ticketWidth / 2, y, { align: 'center', maxWidth: contentWidth });
+      y += 5;
+    }
+
+    const requiredHeight = Math.max(ticketHeight, y + margin + 8);
+    if (requiredHeight > doc.internal.pageSize.getHeight() && doc.internal?.pageSize?.setHeight) {
+      doc.internal.pageSize.setHeight(requiredHeight);
+    }
 
     const blobUrl = doc.output('bloburl');
     if (options.autoPrint) {
@@ -3204,6 +3253,7 @@ async function openSaleInvoiceWindow(sale, options = {}) {
     setMsg(homeMessage, 'No se pudo generar la factura PDF.', false);
   }
 }
+
 
 function renderSalesHistory() {
   if (!salesTable) return;
