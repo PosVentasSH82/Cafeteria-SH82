@@ -383,9 +383,10 @@ state.salesHistoryMode = 'all';
 const SHARED_DB_PATH = 'cafeteria_shared';
 const LEGACY_DB_PATH = 'cafeteria_BaseDatos2';
 const defaultCloudConfig = {
-  firebaseDbUrl: 'https://sh82-d2bf1-default-rtdb.firebaseio.com',
-  firebaseDbToken: 'LTQRqLhvxLxBkGi3a9ia2tlTSvDRu0lrxxczVB4e',
-  firebaseDbPath: SHARED_DB_PATH
+  firebaseDbUrl: 'https://cafeteria-sh82-3dea3-default-rtdb.firebaseio.com',
+  firebaseDbToken: '',
+  firebaseDbPath: SHARED_DB_PATH,
+  firebaseStorageBucket: 'cafeteria-sh82-3dea3.firebasestorage.app'
 };
 
 const defaultBillingConfig = {
@@ -445,6 +446,7 @@ function normalizeCloudSettings() {
   state.settings = { ...defaultCloudConfig, ...(state.settings || {}) };
   if (!String(state.settings.firebaseDbUrl || '').trim()) state.settings.firebaseDbUrl = defaultCloudConfig.firebaseDbUrl;
   if (!String(state.settings.firebaseDbToken || '').trim()) state.settings.firebaseDbToken = defaultCloudConfig.firebaseDbToken;
+  if (!String(state.settings.firebaseStorageBucket || '').trim()) state.settings.firebaseStorageBucket = defaultCloudConfig.firebaseStorageBucket;
   const currentPath = String(state.settings.firebaseDbPath || '').trim();
   if (!currentPath || currentPath === LEGACY_DB_PATH) state.settings.firebaseDbPath = SHARED_DB_PATH;
   normalizeBillingSettings();
