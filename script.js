@@ -555,11 +555,22 @@ function scheduleCloudSync(delayMs = 1200) {
 }
 
 
-function cloudRootUrl() {
+function normalizedFirebaseToken() {
+  const raw = String(state.settings?.firebaseDbToken || '').trim();
+  if (!raw || raw === 'undefined' || raw === 'null') return '';
+  return raw;
+}
+
+function buildCloudRootUrl({ includeToken = true } = {}) {
   const base = String(state.settings?.firebaseDbUrl || '').replace(/\/$/, '');
   if (!base) return '';
-  const token = state.settings?.firebaseDbToken ? `?auth=${encodeURIComponent(state.settings.firebaseDbToken)}` : '';
-  return `${base}/${state.settings.firebaseDbPath || SHARED_DB_PATH}.json${token}`;
+  const token = includeToken ? normalizedFirebaseToken() : '';
+  const qs = token ? `?auth=${encodeURIComponent(token)}` : '';
+  return `${base}/${state.settings.firebaseDbPath || SHARED_DB_PATH}.json${qs}`;
+}
+
+function cloudRootUrl() {
+  return buildCloudRootUrl({ includeToken: true });
 }
 
 function cloudChildUrl(childPath = '') {
@@ -674,34 +685,39 @@ async function optimizeImageForUpload(file, { maxSize = 300 } = {}) {
 }
 
 async function uploadImageToFirebaseStorage({ kind, key, file, previousUrl = '', onProgress = null }) {
-  const bucket = await resolveStorageBucket();
-  if (!bucket) throw new Error('No se pudo determinar el bucket de Firebase Storage.');
-  const safeKey = normalizeImagePathSegment(key);
-  const ext = file.type.includes('png') ? 'webp' : (file.type.includes('jpeg') || file.type.includes('jpg') ? 'jpg' : 'webp');
-  const folder = kind === 'category' ? 'categorias' : 'productos';
-  const path = `${folder}/${safeKey}-${Date.now()}.${ext}`;
-  const optimized = await optimizeImageForUpload(file, { maxSize: kind === 'category' ? 400 : 300 });
-  const { storage } = await ensureFirebaseStorageSdk(bucket);
-  const ref = storage.ref(path);
-  const task = ref.put(optimized.blob, { contentType: optimized.contentType, cacheControl: 'public,max-age=31536000' });
-  await withTimeout(new Promise((resolve, reject) => {
-    task.on('state_changed', (snap) => {
-      if (!onProgress) return;
-      const total = Number(snap.totalBytes || 0);
-      const loaded = Number(snap.bytesTransferred || 0);
-      onProgress(total > 0 ? Math.round((loaded / total) * 100) : 0);
-    }, (err) => reject(err), () => resolve());
-  }), 20000, 'La subida tardó demasiado. Verifica tu conexión o reglas de Firebase Storage.');
-  const downloadUrl = await withTimeout(ref.getDownloadURL(), 8000, 'No se pudo obtener URL pública de la imagen.');
   try {
-    if (previousUrl && previousUrl.includes('/o/')) {
-      const oldPath = decodeURIComponent(previousUrl.split('/o/')[1]?.split('?')[0] || '');
-      if (oldPath) {
-        await storage.ref(oldPath).delete();
+    const bucket = await resolveStorageBucket();
+    if (!bucket) throw new Error('No se pudo determinar el bucket de Firebase Storage.');
+    const safeKey = normalizeImagePathSegment(key);
+    const ext = file.type.includes('png') ? 'webp' : (file.type.includes('jpeg') || file.type.includes('jpg') ? 'jpg' : 'webp');
+    const folder = kind === 'category' ? 'categorias' : 'productos';
+    const path = `${folder}/${safeKey}-${Date.now()}.${ext}`;
+    const optimized = await optimizeImageForUpload(file, { maxSize: kind === 'category' ? 400 : 300 });
+    const { storage } = await ensureFirebaseStorageSdk(bucket);
+    const ref = storage.ref(path);
+    const task = ref.put(optimized.blob, { contentType: optimized.contentType, cacheControl: 'public,max-age=31536000' });
+    await withTimeout(new Promise((resolve, reject) => {
+      task.on('state_changed', (snap) => {
+        if (!onProgress) return;
+        const total = Number(snap.totalBytes || 0);
+        const loaded = Number(snap.bytesTransferred || 0);
+        onProgress(total > 0 ? Math.round((loaded / total) * 100) : 0);
+      }, (err) => reject(err), () => resolve());
+    }), 20000, 'La subida tardó demasiado. Verifica tu conexión o reglas de Firebase Storage.');
+    const downloadUrl = await withTimeout(ref.getDownloadURL(), 8000, 'No se pudo obtener URL pública de la imagen.');
+    try {
+      if (previousUrl && previousUrl.includes('/o/')) {
+        const oldPath = decodeURIComponent(previousUrl.split('/o/')[1]?.split('?')[0] || '');
+        if (oldPath) {
+          await storage.ref(oldPath).delete();
+        }
       }
-    }
-  } catch {}
-  return downloadUrl;
+    } catch {}
+    return downloadUrl;
+  } catch (err) {
+    console.error('[storage] Error durante subida/URL en Firebase Storage', { kind, key, message: err?.message });
+    throw err;
+  }
 }
 
 async function pullFromCloudWithTimeout(timeoutMs = 1800) {
@@ -3679,45 +3695,82 @@ function mergeCashBoxes(remoteBoxes = [], localBoxes = []) {
 
 async function syncToCloud(options = {}) {
   if (!state.settings.firebaseDbUrl) return;
-  try {
-    const token = state.settings.firebaseDbToken ? `?auth=${encodeURIComponent(state.settings.firebaseDbToken)}` : '';
-    const url = `${state.settings.firebaseDbUrl.replace(/\/$/, '')}/${state.settings.firebaseDbPath || SHARED_DB_PATH}.json${token}`;
-    const remoteResp = await fetch(url, { headers: { 'X-Firebase-ETag': 'true' } });
-    const remoteData = await remoteResp.json();
-    const remoteEtag = remoteResp.headers.get('ETag');
-    const remoteUpdatedAt = Number(remoteData?.updatedAt || 0);
-    const payload = snapshotPayload();
-    const mergedDeleted = mergeDeletedRecordIds(remoteData?.deletedRecordIds, payload.deletedRecordIds);
-    payload.deletedRecordIds = mergedDeleted;
-    payload.sales = mergeByIdPreferRemote(remoteData?.sales, payload.sales, mergedDeleted.sales);
-    payload.cashClosings = mergeByIdPreferRemote(remoteData?.cashClosings, payload.cashClosings, mergedDeleted.cashClosings);
-    payload.deletedSales = mergeByIdPreferRemote(remoteData?.deletedSales, payload.deletedSales);
-    payload.outflows = mergeByIdPreferRemote(remoteData?.outflows, payload.outflows);
-    payload.debtPayments = mergeByIdPreferRemote(remoteData?.debtPayments, payload.debtPayments);
-    payload.cashBoxes = mergeCashBoxes(remoteData?.cashBoxes, payload.cashBoxes);
-    if (!payload.activeCashBoxId && remoteData?.activeCashBoxId) payload.activeCashBoxId = remoteData.activeCashBoxId;
-    if (payload.systemStatus === 'CAJA_CERRADA' && remoteData?.systemStatus === 'CAJA_ABIERTA' && payload.activeCashBoxId === remoteData.activeCashBoxId) {
-      payload.systemStatus = remoteData.systemStatus;
-      payload.cashSession = remoteData.cashSession || payload.cashSession;
+  const makeSyncError = (code, stage, status, message, extra = {}) => Object.assign(new Error(message), { code, stage, status, ...extra });
+  const token = normalizedFirebaseToken();
+  const authModes = token ? [true, false] : [false];
+  let lastError = null;
+
+  for (const includeToken of authModes) {
+    const modeLabel = includeToken ? 'token' : 'sin-token';
+    const url = buildCloudRootUrl({ includeToken });
+    if (!url) continue;
+    try {
+      const remoteResp = await fetch(url, { headers: { 'X-Firebase-ETag': 'true' } });
+      if (!remoteResp.ok) {
+        const err = makeSyncError('RTDB_HTTP_GET', 'get', remoteResp.status, `[sync][rtdb] GET fallo (${remoteResp.status}) usando ${modeLabel}.`, { modeLabel });
+        if (includeToken && (remoteResp.status === 401 || remoteResp.status === 403)) {
+          console.warn('[sync][token] GET rechazado con token. Reintentando sin token.', { status: remoteResp.status });
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+      const remoteData = await remoteResp.json();
+      const remoteEtag = remoteResp.headers.get('ETag');
+      const remoteUpdatedAt = Number(remoteData?.updatedAt || 0);
+      const payload = snapshotPayload();
+      const mergedDeleted = mergeDeletedRecordIds(remoteData?.deletedRecordIds, payload.deletedRecordIds);
+      payload.deletedRecordIds = mergedDeleted;
+      payload.sales = mergeByIdPreferRemote(remoteData?.sales, payload.sales, mergedDeleted.sales);
+      payload.cashClosings = mergeByIdPreferRemote(remoteData?.cashClosings, payload.cashClosings, mergedDeleted.cashClosings);
+      payload.deletedSales = mergeByIdPreferRemote(remoteData?.deletedSales, payload.deletedSales);
+      payload.outflows = mergeByIdPreferRemote(remoteData?.outflows, payload.outflows);
+      payload.debtPayments = mergeByIdPreferRemote(remoteData?.debtPayments, payload.debtPayments);
+      payload.cashBoxes = mergeCashBoxes(remoteData?.cashBoxes, payload.cashBoxes);
+      if (!payload.activeCashBoxId && remoteData?.activeCashBoxId) payload.activeCashBoxId = remoteData.activeCashBoxId;
+      if (payload.systemStatus === 'CAJA_CERRADA' && remoteData?.systemStatus === 'CAJA_ABIERTA' && payload.activeCashBoxId === remoteData.activeCashBoxId) {
+        payload.systemStatus = remoteData.systemStatus;
+        payload.cashSession = remoteData.cashSession || payload.cashSession;
+      }
+      if (remoteUpdatedAt && Number(payload.updatedAt || 0) <= remoteUpdatedAt) payload.updatedAt = remoteUpdatedAt + 1;
+      const putHeaders = { 'Content-Type': 'application/json' };
+      if (remoteEtag) putHeaders['if-match'] = remoteEtag;
+      const putResp = await fetch(url, { method: 'PUT', headers: putHeaders, body: JSON.stringify(payload) });
+      if (putResp.status === 412) {
+        console.warn('[sync][etag] Conflicto ETag 412 detectado.', { attempt: Number(options.attempt || 0), modeLabel });
+        if (Number(options.attempt || 0) < 2) return syncToCloud({ ...options, attempt: Number(options.attempt || 0) + 1 });
+        if (syncStatus) syncStatus.textContent = 'Conflicto detectado. Reintenta sincronizar.';
+        throw makeSyncError('SYNC_ETAG_CONFLICT', 'put', 412, '[sync][etag] Conflicto ETag persistente tras reintentos.', { modeLabel });
+      }
+      if (!putResp.ok) {
+        const err = makeSyncError('RTDB_HTTP_PUT', 'put', putResp.status, `[sync][rtdb] PUT fallo (${putResp.status}) usando ${modeLabel}.`, { modeLabel });
+        if (includeToken && (putResp.status === 401 || putResp.status === 403)) {
+          console.warn('[sync][token] PUT rechazado con token. Reintentando sin token.', { status: putResp.status });
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+      state.lastSyncAt = Number(payload.updatedAt || Date.now());
+      saveLocalState();
+      if (syncStatus) syncStatus.textContent = 'Sincronización enviada.';
+      if (token && !includeToken) console.info('[sync][token] Sincronización exitosa ignorando token (token innecesario o inválido).');
+      return;
+    } catch (err) {
+      lastError = err;
+      if (syncStatus) syncStatus.textContent = 'Error de sincronización.';
+      const status = Number(err?.status || 0);
+      if (includeToken && (status === 401 || status === 403)) {
+        console.warn('[sync][token] Fallo de autenticación con token. Reintentando sin token.', { status, message: err?.message });
+        continue;
+      }
+      console.error('[sync][rtdb] Error en sincronización.', { modeLabel, code: err?.code, status: err?.status, stage: err?.stage, message: err?.message });
+      break;
     }
-    if (remoteUpdatedAt && Number(payload.updatedAt || 0) <= remoteUpdatedAt) payload.updatedAt = remoteUpdatedAt + 1;
-    const putHeaders = { 'Content-Type': 'application/json' };
-    if (remoteEtag) putHeaders['if-match'] = remoteEtag;
-    const putResp = await fetch(url, { method: 'PUT', headers: putHeaders, body: JSON.stringify(payload) });
-    if (putResp.status === 412) {
-      if (Number(options.attempt || 0) < 2) return syncToCloud({ ...options, attempt: Number(options.attempt || 0) + 1 });
-      if (syncStatus) syncStatus.textContent = 'Conflicto detectado. Reintenta sincronizar.';
-      throw new Error('sync conflict');
-    }
-    if (!putResp.ok) throw new Error(`sync put failed: ${putResp.status}`);
-    state.lastSyncAt = Number(payload.updatedAt || Date.now());
-    saveLocalState();
-    if (syncStatus) syncStatus.textContent = 'Sincronización enviada.';
-  } catch (err) {
-    if (syncStatus) syncStatus.textContent = 'Error de sincronización.';
-    throw err;
   }
+  throw lastError || new Error('sync unknown failure');
 }
+
 
 async function pullFromCloud(options = {}) {
   if (!state.settings.firebaseDbUrl) return;
@@ -3727,8 +3780,8 @@ async function pullFromCloud(options = {}) {
   cloudPullInFlight = (async () => {
   try {
     lastCloudPullAt = Date.now();
-    const token = state.settings.firebaseDbToken ? `?auth=${encodeURIComponent(state.settings.firebaseDbToken)}` : '';
-    const rootUrl = `${state.settings.firebaseDbUrl.replace(/\/$/, '')}/${state.settings.firebaseDbPath || SHARED_DB_PATH}.json${token}`;
+    const token = normalizedFirebaseToken();
+    const rootUrl = buildCloudRootUrl({ includeToken: Boolean(token) });
     if (!options.force) {
       const stampResp = await fetch(rootUrl.replace(/\.json(\?.*)?$/, '/updatedAt.json$1'));
       const remoteStamp = Number(await stampResp.json() || 0);
@@ -3768,7 +3821,9 @@ async function pullFromCloud(options = {}) {
       maybeForceLogoutFromClosure();
     }
     applyRoute();
-  } catch {}
+  } catch (err) {
+    console.error('[sync][rtdb][pull] Fallo en pullFromCloud', { code: err?.code, status: err?.status, message: err?.message });
+  }
   finally {
     cloudPullInFlight = null;
   }
@@ -4160,7 +4215,9 @@ async function registerSale() {
     confirmed = true;
     Promise.resolve().then(() => pullFromCloud({ force: true })).catch(() => {});
   } catch (err) {
-    console.error('[sale] confirm sync failed', err);
+    if (err?.code === 'SYNC_ETAG_CONFLICT') console.error('[sale][sync][etag] Conflicto ETag al confirmar venta', err);
+    else if (String(err?.code || '').startsWith('RTDB_HTTP_')) console.error('[sale][sync][rtdb] Error HTTP en Realtime Database al confirmar venta', err);
+    else console.error('[sale][sync] confirm sync failed', err);
   }
   if (!confirmed) {
     state.sales = state.sales.filter((x) => x.id !== sale.id);
