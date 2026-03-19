@@ -923,9 +923,11 @@ async function commitSaleToFirebaseTransaction(sale) {
         body: JSON.stringify(payload)
       });
       if (!putResp.ok) throw Object.assign(new Error(`[sale][commit][rtdb] PUT root fallo (${putResp.status})`), { code: 'RTDB_HTTP_ROOT_PUT', status: putResp.status, stage: 'root_put', url: rootUrl });
+      console.info('[sale][firebase-write]', { saleId: sale.id, rootUrl, salesCount: payload.sales.length });
 
       state.lastSyncAt = Number(payload.updatedAt || Date.now());
       saveLocalState();
+      console.info('[sale][state-after-write]', { saleId: sale.id, localSalesCount: state.sales?.length || 0, activeCashBoxId: state.activeCashBoxId || '' });
       console.info('[sale][commit] Venta confirmada en RTDB', { saleId: sale.id, modeLabel, rootUrl, salesCount: payload.sales.length });
       return;
     } catch (err) {
@@ -1031,7 +1033,7 @@ async function migrateCategoryImageRefsToDataUrls() {
 
 async function reserveNextOrderNumber(cashBoxId) {
   await ensureCloudSeedData();
-  console.info('[sale][orderCounter] Reservando correlativo', saleDebugContext({ cashBoxId }));
+  console.info('[sale][order-number] Reservando correlativo', saleDebugContext({ cashBoxId }));
   const fallback = () => {
     const lastIssued = Number(state.orderCounters?.[cashBoxId] || 0);
     const sessionCandidate = Number(state.cashSession?.orderCounter || 1);
@@ -1043,7 +1045,7 @@ async function reserveNextOrderNumber(cashBoxId) {
   };
   const root = cloudRootUrl();
   if (!root || !cashBoxId) {
-    console.error('[sale][orderCounter] fallback por datos faltantes', saleDebugContext({ cashBoxId, reason: !root ? 'sin_root' : 'sin_cashbox' }));
+    console.error('[sale][order-number] fallback por datos faltantes', saleDebugContext({ cashBoxId, reason: !root ? 'sin_root' : 'sin_cashbox' }));
     return fallback();
   }
   const counterPath = encodeURIComponent(cashBoxId);
@@ -1051,7 +1053,7 @@ async function reserveNextOrderNumber(cashBoxId) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const getResp = await fetch(counterUrl, { headers: { 'X-Firebase-ETag': 'true' } });
     if (!getResp.ok) {
-      console.error('[sale][orderCounter] GET counter falló', { status: getResp.status, counterUrl, cashBoxId });
+      console.error('[sale][order-number] GET counter falló', { status: getResp.status, counterUrl, cashBoxId });
       break;
     }
     const etag = getResp.headers.get('ETag') || '*';
@@ -1064,7 +1066,7 @@ async function reserveNextOrderNumber(cashBoxId) {
     });
     if (putResp.status === 412) continue;
     if (!putResp.ok) {
-      console.error('[sale][orderCounter] PUT counter falló', { status: putResp.status, counterUrl, cashBoxId });
+      console.error('[sale][order-number] PUT counter falló', { status: putResp.status, counterUrl, cashBoxId });
       break;
     }
     state.orderCounters = state.orderCounters || {};
@@ -3241,6 +3243,7 @@ function renderSummary() {
   const inQr = outflows.filter((o) => o.direction === 'entrada' && o.method === 'qr').reduce((a, o) => a + Number(o.amount || 0), 0);
   const opening = Number(activeCash.openingCash || 0);
   const total = cashInTotal + qrInTotal + opening;
+  console.info('[sale][cash]', { activeCashBoxId: state.activeCashBoxId || '', cashInTotal, qrInTotal, opening, total });
 
   if (summarySalesCount) summarySalesCount.textContent = String(sales.length);
   if (summaryTotal) summaryTotal.textContent = money(total);
@@ -3768,6 +3771,7 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
       }
       sale.debtAmount = 0;
       sale.paymentStatus = 'realizado';
+      sale.modifiedAt = Date.now();
       state.debtPayments.unshift({
         id: uid(),
         paidAt: new Date().toISOString(),
@@ -4021,6 +4025,34 @@ function mergeByIdPreferLocal(remoteList = [], localList = [], tombstones = []) 
   return [...map.values()];
 }
 
+function recordTimestamp(item = {}) {
+  const modified = Number(item?.modifiedAt || 0);
+  const created = Date.parse(item?.createdAt || '') || 0;
+  const paid = Date.parse(item?.paidAt || '') || 0;
+  return Math.max(modified, created, paid, 0);
+}
+
+function mergeByIdLatest(remoteList = [], localList = [], tombstones = []) {
+  remoteList = normalizeCollectionToArray(remoteList);
+  localList = normalizeCollectionToArray(localList);
+  const map = new Map();
+  const removed = new Set((tombstones || []).map((x) => String(x)));
+  remoteList.forEach((item) => {
+    if (!item?.id) return;
+    const key = String(item.id);
+    if (removed.has(key)) return;
+    map.set(key, item);
+  });
+  localList.forEach((item) => {
+    if (!item?.id) return;
+    const key = String(item.id);
+    if (removed.has(key)) return;
+    const remote = map.get(key);
+    if (!remote || recordTimestamp(item) >= recordTimestamp(remote)) map.set(key, item);
+  });
+  return [...map.values()];
+}
+
 function mergeDeletedRecordIds(remoteDeleted = {}, localDeleted = {}) {
   const keys = ['cashClosings', 'sales'];
   const out = {};
@@ -4091,11 +4123,11 @@ async function syncToCloud(options = {}) {
       console.info('[cloud][payload-size]', { bytes: JSON.stringify(payload).length });
       const mergedDeleted = mergeDeletedRecordIds(remoteData?.deletedRecordIds, payload.deletedRecordIds);
       payload.deletedRecordIds = mergedDeleted;
-      payload.sales = mergeByIdPreferLocal(remoteData?.sales, payload.sales, mergedDeleted.sales);
+      payload.sales = mergeByIdLatest(remoteData?.sales, payload.sales, mergedDeleted.sales);
       payload.cashClosings = mergeByIdPreferRemote(remoteData?.cashClosings, payload.cashClosings, mergedDeleted.cashClosings);
       payload.deletedSales = mergeByIdPreferRemote(remoteData?.deletedSales, payload.deletedSales);
-      payload.outflows = mergeByIdPreferLocal(remoteData?.outflows, payload.outflows);
-      payload.debtPayments = mergeByIdPreferLocal(remoteData?.debtPayments, payload.debtPayments);
+      payload.outflows = mergeByIdLatest(remoteData?.outflows, payload.outflows);
+      payload.debtPayments = mergeByIdLatest(remoteData?.debtPayments, payload.debtPayments);
       payload.cashBoxes = mergeCashBoxes(remoteData?.cashBoxes, payload.cashBoxes);
       if (!payload.activeCashBoxId && remoteData?.activeCashBoxId) payload.activeCashBoxId = remoteData.activeCashBoxId;
       if (payload.systemStatus === 'CAJA_CERRADA' && remoteData?.systemStatus === 'CAJA_ABIERTA' && payload.activeCashBoxId === remoteData.activeCashBoxId) {
@@ -4170,16 +4202,17 @@ async function pullFromCloud(options = {}) {
         if (token && rootUrl.includes('?auth=') && [401, 403].includes(r.status)) continue;
         throw new Error(`[pull] root no disponible (${r.status})`);
       }
-      const dataRaw = await r.json();
-      data = normalizeCloudSeedObject(dataRaw);
-      console.info('[cloud][payload-size]', { bytes: JSON.stringify(dataRaw || {}).length, source: 'pull' });
-      break;
+    const dataRaw = await r.json();
+    data = normalizeCloudSeedObject(dataRaw);
+    console.info('[cloud][payload-size]', { bytes: JSON.stringify(dataRaw || {}).length, source: 'pull' });
+    break;
     }
     if (!data) throw new Error('[pull] No fue posible leer RTDB con token ni sin token.');
     if (!options.force && data.updatedAt <= state.lastSyncAt) {
       return;
     }
     applyCloudData(data);
+    console.info('[sale][pull]', { salesCount: Array.isArray(data.sales) ? data.sales.length : -1, activeCashBoxId: data.activeCashBoxId || '' });
     console.info('[cloud][pull] fin', { updatedAt: data.updatedAt, rootUrlUsed });
     console.info('[cloud] estado sincronizado', { activeCashBoxId: state.activeCashBoxId, systemStatus: state.systemStatus, rootUrlUsed });
     const currentRoute = normalizeRoute(window.location.hash || '#home');
@@ -4565,11 +4598,12 @@ async function registerSale() {
   let orderNumber = 0;
   try {
     orderNumber = await reserveNextOrderNumber(activeCashBoxId);
+    console.info('[sale][order-number]', { orderNumber, activeCashBoxId });
   } catch (err) {
     console.error('[sale] fallo al reservar correlativo', { message: err?.message, code: err?.code, status: err?.status, context: saleDebugContext({ activeCashBoxId }) });
     return setMsg(saleMessage, 'fallo al reservar correlativo', false);
   }
-  const sale = { id: uid(), cashBoxId: activeCashBoxId, orderNumber, createdAt: new Date().toISOString(), user: state.currentUser.username, items: state.currentCart.map((i) => ({ ...i })), total: totals.final, payment, breakdown, debtAmount, debtorId, paymentStatus: debtAmount > 0 ? 'pendiente' : 'realizado', orderStatus: 'pendiente', deliveryItems, carryOverDebt: false };
+  const sale = { id: uid(), cashBoxId: activeCashBoxId, orderNumber, createdAt: new Date().toISOString(), modifiedAt: Date.now(), user: state.currentUser.username, items: state.currentCart.map((i) => ({ ...i })), total: totals.final, payment, breakdown, debtAmount, debtorId, paymentStatus: debtAmount > 0 ? 'pendiente' : 'realizado', orderStatus: 'pendiente', deliveryItems, carryOverDebt: false };
   console.info('[sale][create] Venta generada', saleDebugContext({ saleId: sale.id, sale, orderCounters: state.orderCounters }));
   sale.invoiceSnapshot = buildInvoiceData(sale);
   if (isStockEnabled()) {
@@ -4578,6 +4612,7 @@ async function registerSale() {
       if (!p) continue;
       const next = Number(p.stockCurrent || 0) - Number(item.qty || 0);
       p.stockCurrent = next;
+      console.info('[sale][stock]', { saleId: sale.id, productId: p.id, stockCurrent: next });
       if (next <= Number(appConfig.stockMinimo || 0)) console.warn('[stock] Producto con stock mínimo', p.name, next);
       if (Array.isArray(p.combo) && p.combo.length) {
         const req = comboComponentRequirements(p, item.qty);
@@ -4597,6 +4632,7 @@ async function registerSale() {
   persist({ sync: false, module: 'sale' });
   let confirmed = false;
   try {
+    console.info('[sale][before-commit]', { saleId: sale.id, orderNumber: sale.orderNumber, cashBoxId: sale.cashBoxId, activeCashBoxId: state.activeCashBoxId || '', user: sale.user, payment: sale.payment, total: sale.total, inStateSales: state.sales.some((x) => x.id === sale.id) });
     await commitSaleToFirebaseTransaction(sale);
     confirmed = true;
     Promise.resolve().then(() => pullFromCloud({ force: true })).catch(() => {});
