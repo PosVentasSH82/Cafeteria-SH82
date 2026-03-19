@@ -16,7 +16,10 @@ const state = {
   touchUiConfigByUser: JSON.parse(localStorage.getItem('cafeteria_touch_ui_config_by_user') || '{}'),
   categoryImages: JSON.parse(localStorage.getItem('cafeteria_category_images') || '{}'),
   orderCounters: JSON.parse(localStorage.getItem('cafeteria_order_counters') || '{}'),
-  deletedRecordIds: JSON.parse(localStorage.getItem('cafeteria_deleted_record_ids') || '{"cashClosings":[],"sales":[]}')
+  deletedRecordIds: JSON.parse(localStorage.getItem('cafeteria_deleted_record_ids') || '{"cashClosings":[],"sales":[]}'),
+  subcategories: JSON.parse(localStorage.getItem('cafeteria_subcategories') || '{}'),
+  generalCash: JSON.parse(localStorage.getItem('cafeteria_general_cash') || '{"efectivo":0,"qr":0,"estado":"CERRADA","openedAt":"","closedAt":"","openedBy":"","closedBy":"","updatedAt":0}'),
+  generalClosings: JSON.parse(localStorage.getItem('cafeteria_general_closings') || '[]')
 };
 
 let sessionWatchInterval = null;
@@ -457,6 +460,120 @@ function normalizeCloudSettings() {
 
 normalizeCloudSettings();
 
+function cloudSeedTemplate() {
+  return {
+    products: [],
+    sales: [],
+    deletedSales: [],
+    cashClosings: [],
+    cashSession: null,
+    users: [],
+    settings: {},
+    categories: [],
+    subcategories: {},
+    people: [],
+    stockConfig: { enabled: false, min: 0 },
+    outflows: [],
+    debtPayments: [],
+    components: [],
+    componentLinks: {},
+    componentMoves: [],
+    cashBoxes: [],
+    activeCashBoxId: '',
+    systemStatus: 'CAJA_CERRADA',
+    forceLogoutAt: 0,
+    userSalesModes: {},
+    touchUiConfigByUser: {},
+    categoryImages: {},
+    orderCounters: {},
+    deletedRecordIds: { cashClosings: [], sales: [] },
+    generalCash: { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 },
+    generalClosings: [],
+    updatedAt: 0
+  };
+}
+
+function normalizeCloudSeedObject(raw) {
+  const base = cloudSeedTemplate();
+  const data = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? { ...raw } : {};
+  const merged = { ...base, ...data };
+  if (!Array.isArray(merged.products)) merged.products = [];
+  if (!Array.isArray(merged.sales)) merged.sales = [];
+  if (!Array.isArray(merged.deletedSales)) merged.deletedSales = [];
+  if (!Array.isArray(merged.cashClosings)) merged.cashClosings = [];
+  if (!Array.isArray(merged.users)) merged.users = [];
+  if (!Array.isArray(merged.categories)) merged.categories = [];
+  if (!merged.subcategories || typeof merged.subcategories !== 'object' || Array.isArray(merged.subcategories)) merged.subcategories = {};
+  if (!Array.isArray(merged.people)) merged.people = [];
+  if (!merged.stockConfig || typeof merged.stockConfig !== 'object') merged.stockConfig = { enabled: false, min: 0 };
+  if (!Array.isArray(merged.outflows)) merged.outflows = [];
+  if (!Array.isArray(merged.debtPayments)) merged.debtPayments = [];
+  if (!Array.isArray(merged.components)) merged.components = [];
+  if (!merged.componentLinks || typeof merged.componentLinks !== 'object' || Array.isArray(merged.componentLinks)) merged.componentLinks = {};
+  if (!Array.isArray(merged.componentMoves)) merged.componentMoves = [];
+  if (!Array.isArray(merged.cashBoxes)) merged.cashBoxes = [];
+  if (!merged.orderCounters || typeof merged.orderCounters !== 'object' || Array.isArray(merged.orderCounters)) merged.orderCounters = {};
+  if (!merged.deletedRecordIds || typeof merged.deletedRecordIds !== 'object' || Array.isArray(merged.deletedRecordIds)) merged.deletedRecordIds = { cashClosings: [], sales: [] };
+  merged.deletedRecordIds.cashClosings = Array.isArray(merged.deletedRecordIds.cashClosings) ? merged.deletedRecordIds.cashClosings : [];
+  merged.deletedRecordIds.sales = Array.isArray(merged.deletedRecordIds.sales) ? merged.deletedRecordIds.sales : [];
+  if (!merged.generalCash || typeof merged.generalCash !== 'object' || Array.isArray(merged.generalCash)) merged.generalCash = base.generalCash;
+  merged.generalCash = { ...base.generalCash, ...merged.generalCash };
+  if (!Array.isArray(merged.generalClosings)) merged.generalClosings = [];
+  if (!merged.settings || typeof merged.settings !== 'object' || Array.isArray(merged.settings)) merged.settings = {};
+  if (!merged.userSalesModes || typeof merged.userSalesModes !== 'object' || Array.isArray(merged.userSalesModes)) merged.userSalesModes = {};
+  if (!merged.touchUiConfigByUser || typeof merged.touchUiConfigByUser !== 'object' || Array.isArray(merged.touchUiConfigByUser)) merged.touchUiConfigByUser = {};
+  if (!merged.categoryImages || typeof merged.categoryImages !== 'object' || Array.isArray(merged.categoryImages)) merged.categoryImages = {};
+  merged.updatedAt = Math.max(Number(merged.updatedAt || 0), Date.now());
+  if (!merged.users.find((u) => u?.username === 'admin')) {
+    merged.users.push({ username: 'admin', password: '5432', permissions: defaultPermissions(), createdBy: 'admin', enabled: true, lastActivityAt: Date.now(), lastLogoutAt: 0 });
+  }
+  return merged;
+}
+
+let cloudSeedValidatedAt = 0;
+async function ensureCloudSeedData(options = {}) {
+  if (!state.settings?.firebaseDbUrl) return;
+  if (!options.force && (Date.now() - cloudSeedValidatedAt) < 5000) return;
+  const token = normalizedFirebaseToken();
+  const authModes = token ? [true, false] : [false];
+  let lastError = null;
+  for (const includeToken of authModes) {
+    const modeLabel = includeToken ? 'token' : 'sin-token';
+    const rootUrl = buildCloudRootUrl({ includeToken });
+    if (!rootUrl) continue;
+    try {
+      const resp = await fetch(rootUrl);
+      if (!resp.ok) {
+        if (includeToken && (resp.status === 401 || resp.status === 403)) continue;
+        throw new Error(`[seed] GET root fallo ${resp.status}`);
+      }
+      let raw = null;
+      try { raw = await resp.json(); } catch { raw = null; }
+      const validObject = raw && typeof raw === 'object' && !Array.isArray(raw);
+      if (validObject) {
+        cloudSeedValidatedAt = Date.now();
+        return;
+      }
+      console.warn('[seed] Raíz inválida detectada. Re-sembrando cafeteria_shared.', { modeLabel, currentType: typeof raw, currentValue: raw });
+      const seeded = normalizeCloudSeedObject(raw);
+      const putResp = await fetch(rootUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(seeded) });
+      if (!putResp.ok) {
+        if (includeToken && (putResp.status === 401 || putResp.status === 403)) continue;
+        throw new Error(`[seed] PUT seed fallo ${putResp.status}`);
+      }
+      cloudSeedValidatedAt = Date.now();
+      console.info('[seed] cafeteria_shared sembrado correctamente.', { modeLabel });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!(includeToken && [401, 403].includes(Number(err?.status || 0)))) {
+        console.error('[seed] Error en ensureCloudSeedData', { modeLabel, message: err?.message });
+      }
+    }
+  }
+  if (lastError) throw lastError;
+}
+
 
 function money(v) { return `Bs ${Number(v || 0).toFixed(2)}`; }
 function orderNumberLabel(v) { return (v === undefined || v === null || v === '') ? '-' : String(v); }
@@ -547,6 +664,9 @@ function saveLocalState() {
   safeLocalSet('cafeteria_category_images', JSON.stringify(categoryImagesForLocalPersistence()));
   safeLocalSet('cafeteria_order_counters', JSON.stringify(state.orderCounters || {}));
   safeLocalSet('cafeteria_deleted_record_ids', JSON.stringify(state.deletedRecordIds || { cashClosings: [], sales: [] }));
+  safeLocalSet('cafeteria_subcategories', JSON.stringify(state.subcategories || {}));
+  safeLocalSet('cafeteria_general_cash', JSON.stringify(state.generalCash || { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 }));
+  safeLocalSet('cafeteria_general_closings', JSON.stringify(state.generalClosings || []));
 }
 
 function scheduleCloudSync(delayMs = 1200) {
@@ -738,6 +858,7 @@ function cloudPathUrl(path, { includeToken = true } = {}) {
 }
 
 async function commitSaleToFirebaseTransaction(sale) {
+  await ensureCloudSeedData();
   const token = normalizedFirebaseToken();
   const authModes = token ? [true, false] : [false];
   let lastError = null;
@@ -787,11 +908,11 @@ async function commitSaleToFirebaseTransaction(sale) {
 }
 
 function applyCloudData(data) {
-  if (!data || !data.updatedAt) return;
-  state.lastSyncAt = Number(data.updatedAt || Date.now());
-  state.forceLogoutAt = Number(data.forceLogoutAt || 0);
-  ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds'].forEach((k) => {
-    if (data[k] !== undefined) state[k] = data[k];
+  const normalized = normalizeCloudSeedObject(data);
+  state.lastSyncAt = Number(normalized.updatedAt || Date.now());
+  state.forceLogoutAt = Number(normalized.forceLogoutAt || 0);
+  ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings'].forEach((k) => {
+    if (normalized[k] !== undefined) state[k] = normalized[k];
   });
   if (state.currentUser && !validateSessionPolicy({ silent: true })) return;
   normalizeCloudSettings();
@@ -871,6 +992,7 @@ async function migrateCategoryImageRefsToDataUrls() {
 }
 
 async function reserveNextOrderNumber(cashBoxId) {
+  await ensureCloudSeedData();
   const fallback = () => {
     const lastIssued = Number(state.orderCounters?.[cashBoxId] || 0);
     const sessionCandidate = Number(state.cashSession?.orderCounter || 1);
@@ -3739,6 +3861,7 @@ function snapshotPayload() {
     users: state.users,
     settings: state.settings,
     categories: state.categories,
+    subcategories: state.subcategories || {},
     people: state.people,
     stockConfig: state.stockConfig,
     outflows: state.outflows,
@@ -3755,6 +3878,8 @@ function snapshotPayload() {
     categoryImages: state.categoryImages || {},
     orderCounters: state.orderCounters || {},
     deletedRecordIds: state.deletedRecordIds || { cashClosings: [], sales: [] },
+    generalCash: state.generalCash || { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 },
+    generalClosings: state.generalClosings || [],
     updatedAt: Date.now()
   };
 }
@@ -3814,6 +3939,7 @@ function mergeCashBoxes(remoteBoxes = [], localBoxes = []) {
 
 async function syncToCloud(options = {}) {
   if (!state.settings.firebaseDbUrl) return;
+  await ensureCloudSeedData();
   const makeSyncError = (code, stage, status, message, extra = {}) => Object.assign(new Error(message), { code, stage, status, ...extra });
   const token = normalizedFirebaseToken();
   const authModes = token ? [true, false] : [false];
@@ -3886,6 +4012,7 @@ async function syncToCloud(options = {}) {
 
 async function pullFromCloud(options = {}) {
   if (!state.settings.firebaseDbUrl) return;
+  await ensureCloudSeedData();
   const now = Date.now();
   if (!options.force && (now - lastCloudPullAt) < CLOUD_PULL_MIN_INTERVAL_MS) return;
   if (cloudPullInFlight) return cloudPullInFlight;
@@ -3900,8 +4027,8 @@ async function pullFromCloud(options = {}) {
       if (!remoteStamp || remoteStamp <= Number(state.lastSyncAt || 0)) return;
     }
     const r = await fetch(rootUrl);
-    const data = await r.json();
-    if (!data || !data.updatedAt) return;
+    const dataRaw = await r.json();
+    const data = normalizeCloudSeedObject(dataRaw);
     if (!options.force && data.updatedAt <= state.lastSyncAt) {
       return;
     }
@@ -4218,6 +4345,7 @@ async function closeCashSession() {
 }
 
 async function registerSale() {
+  await ensureCloudSeedData();
   if (isSubmittingSale) return;
   isSubmittingSale = true;
   if (createSaleBtn) createSaleBtn.disabled = true;
