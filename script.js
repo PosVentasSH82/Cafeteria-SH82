@@ -363,6 +363,9 @@ let cloudPullInFlight = null;
 let cloudSyncTimer = null;
 let lastCloudPullAt = 0;
 let cloudHydrated = false;
+let bootCloudReady = false;
+let bootListenerReady = false;
+let bootCashReady = false;
 let firebaseRealtimeListener = null;
 let firebaseRealtimeListenerUrl = '';
 let realtimeReconnectTimer = null;
@@ -945,6 +948,7 @@ function applyCloudData(data) {
   console.info('[users][apply]', { usersCount: Array.isArray(normalized.users) ? normalized.users.length : -1 });
   console.info('[settings][apply]', { title1: normalized.settings?.title1 || '', hasLogo: Boolean(normalized.settings?.logoDataUrl) });
   console.info('[sale][apply]', { salesCount: Array.isArray(normalized.sales) ? normalized.sales.length : -1, activeCashBoxId: normalized.activeCashBoxId || '' });
+  console.info('[debt][apply]', { debtPaymentsCount: Array.isArray(normalized.debtPayments) ? normalized.debtPayments.length : -1 });
   state.lastSyncAt = Number(normalized.updatedAt || Date.now());
   state.forceLogoutAt = Number(normalized.forceLogoutAt || 0);
   ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings'].forEach((k) => {
@@ -981,6 +985,8 @@ function startFirebaseRealtimeListener(options = {}) {
   try {
     firebaseRealtimeListener = new EventSource(url);
     console.info('[cloud][listener] conectado', { url });
+    bootListenerReady = true;
+    console.info('[boot][listener-ready]', { bootListenerReady, url });
     const handleEvent = () => {
       Promise.resolve().then(() => pullFromCloud({ force: true })).catch(() => {});
     };
@@ -1967,14 +1973,17 @@ function applySettings() {
   }
   renderBillingPreview();
   if (state.settings.logoDataUrl && homeLogo && logoPlaceholder) {
+    console.info('[settings][logo-apply]', { target: 'home', hasLogo: true });
     homeLogo.src = state.settings.logoDataUrl;
     homeLogo.classList.remove('hidden');
     logoPlaceholder.classList.add('hidden');
   }
   if (state.settings.logoDataUrl && posHeaderLogo) {
+    console.info('[settings][logo-apply]', { target: 'pos', hasLogo: true });
     posHeaderLogo.src = state.settings.logoDataUrl;
     posHeaderLogo.classList.remove('hidden');
   }
+  console.info('[settings][logo-render]', { hasLogo: Boolean(state.settings.logoDataUrl), homeHidden: homeLogo?.classList.contains('hidden'), posHidden: posHeaderLogo?.classList.contains('hidden') });
 }
 
 function renderCashStatus() {
@@ -2540,6 +2549,7 @@ function renderDebtors() {
     debtPersonTitle.insertAdjacentElement('afterend', debtPersonTotal);
   }
   const grouped = new Map();
+  console.info('[debt][render]', { salesCount: state.sales?.length || 0, debtPaymentsCount: state.debtPayments?.length || 0 });
   state.sales.filter((s) => Number(s.debtAmount || 0) > 0 && s.debtorId && s.paymentStatus !== 'realizado').forEach((s) => {
     if (!grouped.has(s.debtorId)) grouped.set(s.debtorId, []);
     grouped.get(s.debtorId).push(s);
@@ -3751,6 +3761,7 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
   sync();
   document.getElementById('dpBackBtn')?.addEventListener('click', () => overlay.remove());
   document.getElementById('dpPayBtn')?.addEventListener('click', () => {
+    console.info('[debt][pay-start]', { saleIds, debtorId });
     const method = methodEl?.value || 'efectivo';
     const targets = getTargetSales().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     const activeCash = getActiveCashBox();
@@ -3790,12 +3801,13 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
       });
     });
     persist({ module: 'sale' });
+    console.info('[debt][persist]', { debtPaymentsCount: state.debtPayments?.length || 0 });
     renderDebtors();
     renderSummary();
   renderSoldProductsList();
     renderDebtPayments();
-    Promise.resolve().then(() => syncToCloud()).catch((err) => console.error('[sale][sync] error sincronizando pago de deuda', err));
-    Promise.resolve().then(() => pullFromCloud({ force: true })).catch(() => {});
+    Promise.resolve().then(() => syncToCloud()).then(() => console.info('[debt][sync] ok')).catch((err) => console.error('[debt][sync] error', err));
+    Promise.resolve().then(() => pullFromCloud({ force: true })).then(() => console.info('[debt][pull] ok')).catch(() => {});
     overlay.remove();
   });
 }
@@ -3826,6 +3838,7 @@ function saleRecordForPayment(payment) {
 
 function renderDebtPayments() {
   if (!debtPaymentsTable) return;
+  console.info('[debt][render]', { mode: state.debtPaymentsView || 'history', paymentsCount: state.debtPayments?.length || 0 });
   state.debtPaymentsView = state.debtPaymentsView || 'history';
   state.activeDebtorPaymentsId = state.activeDebtorPaymentsId || '';
   if (debtPaymentsHistoryCard && !document.getElementById('debtPaymentsNav')) {
@@ -3939,14 +3952,13 @@ function stripHeavyDataUrl(value) {
 function sanitizeCloudPayload(payload) {
   const out = { ...payload };
   out.settings = { ...(payload.settings || {}) };
-  out.settings.logoDataUrl = stripHeavyDataUrl(out.settings.logoDataUrl);
   if (out.settings.billing && typeof out.settings.billing === 'object') {
     out.settings.billing = { ...out.settings.billing, logoDataUrl: stripHeavyDataUrl(out.settings.billing.logoDataUrl) };
   }
   out.products = (payload.products || []).map((p) => ({ ...p, imageDataUrl: stripHeavyDataUrl(p?.imageDataUrl) }));
   out.categoryImages = Object.fromEntries(Object.entries(payload.categoryImages || {}).map(([k, v]) => [k, stripHeavyDataUrl(v)]));
   console.info('[cloud][images]', {
-    strippedMainLogo: Boolean(payload.settings?.logoDataUrl && String(payload.settings.logoDataUrl).startsWith('data:image/')),
+    strippedMainLogo: false,
     strippedBillingLogo: Boolean(payload.settings?.billing?.logoDataUrl && String(payload.settings.billing.logoDataUrl).startsWith('data:image/'))
   });
   return out;
@@ -4119,6 +4131,7 @@ async function syncToCloud(options = {}) {
       const payload = sanitizeCloudPayload(rawPayload);
       console.info('[users][sync]', { usersCount: payload.users?.length || 0 });
       console.info('[settings][sync]', { title1: payload.settings?.title1 || '', hasLogo: Boolean(payload.settings?.logoDataUrl) });
+      console.info('[settings][logo-sync]', { hasLogo: Boolean(payload.settings?.logoDataUrl), logoLength: String(payload.settings?.logoDataUrl || '').length });
       console.info('[sale][sync]', { salesCount: payload.sales?.length || 0, activeCashBoxId: payload.activeCashBoxId || '' });
       console.info('[cloud][payload-size]', { bytes: JSON.stringify(payload).length });
       const mergedDeleted = mergeDeletedRecordIds(remoteData?.deletedRecordIds, payload.deletedRecordIds);
@@ -4539,6 +4552,14 @@ async function registerSale() {
   if (createSaleBtn) createSaleBtn.disabled = true;
   touchSessionActivity();
   try {
+  console.info('[sale][init-check]', { cloudHydrated, bootCloudReady, bootListenerReady, bootCashReady, activeCashBoxId: state.activeCashBoxId || '' });
+  if ((state.sales || []).length < 2) console.info('[sale][first-run]', { salesCount: (state.sales || []).length });
+  if (!cloudHydrated || !bootCloudReady) {
+    await pullFromCloud({ force: true });
+    bootCloudReady = true;
+    cloudHydrated = true;
+  }
+  if (!bootListenerReady) startFirebaseRealtimeListener();
   if (!state.currentUser) return setMsg(saleMessage, 'fallo porque currentUser es inválido', false);
   if (!cloudHydrated) return setMsg(saleMessage, 'fallo porque el cliente no está hidratado desde cloud', false);
   const activeCash = getActiveCashBox();
@@ -5087,10 +5108,15 @@ async function saveMainSettings() {
   console.info('[settings][save] state.settings actualizado', { title1: state.settings.title1, title2: state.settings.title2, hasLogo: Boolean(state.settings.logoDataUrl) });
   syncAppConfig();
   const file = logoInput?.files?.[0];
-  if (!file) return flushConfigChanges('Configuración guardada.');
+  if (!file) {
+    console.info('[settings][logo-save]', { action: 'no-new-file', hasLogo: Boolean(state.settings.logoDataUrl) });
+    return flushConfigChanges('Configuración guardada.');
+  }
+  console.info('[settings][logo-load]', { fileName: file.name, size: file.size });
   const reader = new FileReader();
   reader.onload = async () => {
     state.settings.logoDataUrl = String(reader.result || '');
+    console.info('[settings][logo-save]', { action: 'loaded', length: state.settings.logoDataUrl.length });
     await flushConfigChanges('Configuración guardada.');
     if (logoInput) logoInput.value = '';
   };
@@ -5919,12 +5945,15 @@ function wireEvents() {
 }
 
 async function bootstrap() {
+  console.info('[boot][start]', { at: new Date().toISOString() });
   normalizeCloudSettings();
   let cloudBootHydrated = false;
   try {
     await ensureCloudSeedData({ force: true });
     await pullFromCloud({ force: true });
     cloudBootHydrated = true;
+    bootCloudReady = true;
+    console.info('[boot][cloud-ready]', { cloudBootHydrated, lastSyncAt: state.lastSyncAt || 0 });
   } catch (err) {
     console.error('[bootstrap] No se pudo hidratar desde cloud al inicio. Se usará respaldo local temporal.', { message: err?.message });
   }
@@ -5954,6 +5983,8 @@ async function bootstrap() {
   normalizeWarehouseData();
   normalizeDebtPaymentsData();
   normalizeCashState();
+  bootCashReady = Boolean(getActiveCashBox() || state.systemStatus === 'CAJA_CERRADA');
+  console.info('[boot][cash-ready]', { bootCashReady, activeCashBoxId: state.activeCashBoxId || '', systemStatus: state.systemStatus });
   syncAppConfig();
   saveLocalState();
   applySettings();
