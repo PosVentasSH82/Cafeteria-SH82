@@ -916,8 +916,8 @@ async function commitSaleToFirebaseTransaction(sale) {
       const remote = normalizeCloudSeedObject(remoteRaw);
       const payload = {
         ...remote,
-        sales: mergeByIdPreferRemote(remote.sales, state.sales || []),
-        products: mergeByIdPreferRemote(remote.products, state.products || []),
+        sales: mergeByIdLatest(remote.sales, state.sales || []),
+        products: mergeByIdLatest(remote.products, state.products || []),
         updatedAt: Date.now()
       };
       const putResp = await fetch(rootUrl, {
@@ -4662,8 +4662,13 @@ async function registerSale() {
   try {
     console.info('[sale][before-commit]', { saleId: sale.id, orderNumber: sale.orderNumber, cashBoxId: sale.cashBoxId, activeCashBoxId: state.activeCashBoxId || '', user: sale.user, payment: sale.payment, total: sale.total, inStateSales: state.sales.some((x) => x.id === sale.id) });
     await commitSaleToFirebaseTransaction(sale);
+    await pullFromCloud({ force: true });
+    const inState = (state.sales || []).some((x) => x.id === sale.id);
+    const inHistory = salesForActiveCashBox().some((x) => x.id === sale.id);
+    const totals = saleTotals();
+    console.info('[sale][success-gate]', { saleId: sale.id, inState, inHistory, totalAfterPull: totals.final, activeCashBoxId: state.activeCashBoxId || '' });
+    if (!inState || !inHistory) throw new Error('sale success-gate failed');
     confirmed = true;
-    Promise.resolve().then(() => pullFromCloud({ force: true })).catch(() => {});
     Promise.resolve().then(() => syncToCloud({ attempt: 0 })).catch((err) => console.warn('[sale][sync] post-confirm full sync warning', err));
   } catch (err) {
     if (String(err?.code || '').startsWith('RTDB_HTTP_')) console.error('[sale][sync][rtdb] fallo al confirmar venta en RTDB', { error: err, context: saleDebugContext({ saleId: sale.id }) });
