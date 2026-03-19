@@ -500,15 +500,21 @@ function cloudSeedTemplate() {
   };
 }
 
+function normalizeCollectionToArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return Object.values(value).filter((x) => x && typeof x === 'object');
+  return [];
+}
+
 function normalizeCloudSeedObject(raw) {
   const base = cloudSeedTemplate();
   const data = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? { ...raw } : {};
   const merged = { ...base, ...data };
-  if (!Array.isArray(merged.products)) merged.products = [];
-  if (!Array.isArray(merged.sales)) merged.sales = [];
-  if (!Array.isArray(merged.deletedSales)) merged.deletedSales = [];
-  if (!Array.isArray(merged.cashClosings)) merged.cashClosings = [];
-  if (!Array.isArray(merged.users)) merged.users = [];
+  merged.products = normalizeCollectionToArray(merged.products);
+  merged.sales = normalizeCollectionToArray(merged.sales);
+  merged.deletedSales = normalizeCollectionToArray(merged.deletedSales);
+  merged.cashClosings = normalizeCollectionToArray(merged.cashClosings);
+  merged.users = normalizeCollectionToArray(merged.users);
   if (!Array.isArray(merged.categories)) merged.categories = [];
   if (!merged.subcategories || typeof merged.subcategories !== 'object' || Array.isArray(merged.subcategories)) merged.subcategories = {};
   if (!Array.isArray(merged.people)) merged.people = [];
@@ -886,49 +892,46 @@ function cloudPathUrl(path, { includeToken = true } = {}) {
 
 async function commitSaleToFirebaseTransaction(sale) {
   await ensureCloudSeedData();
-  console.info('[sale][tx] Iniciando confirmación RTDB', saleDebugContext({ saleId: sale?.id, salePreview: sale }));
+  console.info('[sale][commit] Iniciando confirmación RTDB', saleDebugContext({ saleId: sale?.id, salePreview: sale }));
   const token = normalizedFirebaseToken();
   const authModes = token ? [true, false] : [false];
   let lastError = null;
   for (const includeToken of authModes) {
     const modeLabel = includeToken ? 'token' : 'sin-token';
     try {
-      const saleResp = await fetch(cloudPathUrl(`sales/${encodeURIComponent(sale.id)}`, { includeToken }), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sale)
-      });
-      if (!saleResp.ok) {
-        if (includeToken && (saleResp.status === 401 || saleResp.status === 403)) {
-          console.warn('[sale][tx][token] Venta rechazada con token. Reintentando sin token.', { status: saleResp.status });
+      const rootUrl = buildCloudRootUrl({ includeToken });
+      const rootResp = await fetch(rootUrl);
+      if (!rootResp.ok) {
+        if (includeToken && (rootResp.status === 401 || rootResp.status === 403)) {
+          console.warn('[sale][commit][token] GET root rechazado con token. Reintentando sin token.', { status: rootResp.status });
           continue;
         }
-        throw Object.assign(new Error(`[sale][tx][rtdb] PUT sale fallo (${saleResp.status})`), { code: 'RTDB_HTTP_SALE', status: saleResp.status, stage: 'sale_put', url: cloudPathUrl(`sales/${encodeURIComponent(sale.id)}`, { includeToken }) });
+        throw Object.assign(new Error(`[sale][commit][rtdb] GET root fallo (${rootResp.status})`), { code: 'RTDB_HTTP_ROOT_GET', status: rootResp.status, stage: 'root_get', url: rootUrl });
       }
-
-      const productsResp = await fetch(cloudPathUrl('products', { includeToken }), {
+      let remoteRaw = null;
+      try { remoteRaw = await rootResp.json(); } catch { remoteRaw = null; }
+      const remote = normalizeCloudSeedObject(remoteRaw);
+      const payload = {
+        ...remote,
+        sales: mergeByIdPreferRemote(remote.sales, state.sales || []),
+        products: mergeByIdPreferRemote(remote.products, state.products || []),
+        updatedAt: Date.now()
+      };
+      const putResp = await fetch(rootUrl, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state.products || [])
+        body: JSON.stringify(payload)
       });
-      if (!productsResp.ok) throw Object.assign(new Error(`[sale][tx][rtdb] PUT products fallo (${productsResp.status})`), { code: 'RTDB_HTTP_PRODUCTS', status: productsResp.status, stage: 'products_put', url: cloudPathUrl('products', { includeToken }) });
+      if (!putResp.ok) throw Object.assign(new Error(`[sale][commit][rtdb] PUT root fallo (${putResp.status})`), { code: 'RTDB_HTTP_ROOT_PUT', status: putResp.status, stage: 'root_put', url: rootUrl });
 
-      const updatedAt = Date.now();
-      const updatedResp = await fetch(cloudPathUrl('updatedAt', { includeToken }), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedAt)
-      });
-      if (!updatedResp.ok) throw Object.assign(new Error(`[sale][tx][rtdb] PUT updatedAt fallo (${updatedResp.status})`), { code: 'RTDB_HTTP_UPDATEDAT', status: updatedResp.status, stage: 'updatedat_put', url: cloudPathUrl('updatedAt', { includeToken }) });
-
-      state.lastSyncAt = updatedAt;
+      state.lastSyncAt = Number(payload.updatedAt || Date.now());
       saveLocalState();
-      console.info('[sale][tx] Venta confirmada en RTDB', { saleId: sale.id, modeLabel });
+      console.info('[sale][commit] Venta confirmada en RTDB', { saleId: sale.id, modeLabel, rootUrl, salesCount: payload.sales.length });
       return;
     } catch (err) {
       lastError = err;
       if (includeToken && [401, 403].includes(Number(err?.status || 0))) continue;
-      console.error('[sale][tx] Error confirmando venta en RTDB', { modeLabel, code: err?.code, status: err?.status, stage: err?.stage, message: err?.message, url: err?.url, saleId: sale?.id, context: saleDebugContext() });
+      console.error('[sale][commit] Error confirmando venta en RTDB', { modeLabel, code: err?.code, status: err?.status, stage: err?.stage, message: err?.message, url: err?.url, saleId: sale?.id, context: saleDebugContext() });
       if (!(includeToken && [401, 403].includes(Number(err?.status || 0)))) break;
     }
   }
@@ -937,6 +940,9 @@ async function commitSaleToFirebaseTransaction(sale) {
 
 function applyCloudData(data) {
   const normalized = normalizeCloudSeedObject(data);
+  console.info('[users][apply]', { usersCount: Array.isArray(normalized.users) ? normalized.users.length : -1 });
+  console.info('[settings][apply]', { title1: normalized.settings?.title1 || '', hasLogo: Boolean(normalized.settings?.logoDataUrl) });
+  console.info('[sale][apply]', { salesCount: Array.isArray(normalized.sales) ? normalized.sales.length : -1, activeCashBoxId: normalized.activeCashBoxId || '' });
   state.lastSyncAt = Number(normalized.updatedAt || Date.now());
   state.forceLogoutAt = Number(normalized.forceLogoutAt || 0);
   ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings'].forEach((k) => {
@@ -1070,6 +1076,9 @@ async function reserveNextOrderNumber(cashBoxId) {
 
 function persist(options = {}) {
   if (state.currentUser && !validateSessionPolicy({ silent: false })) return;
+  if (options.module === 'users') console.info('[users][persist]', { usersCount: state.users?.length || 0 });
+  if (options.module === 'settings') console.info('[settings][persist]', { title1: state.settings?.title1 || '', hasLogo: Boolean(state.settings?.logoDataUrl) });
+  if (options.module === 'sale') console.info('[sale][persist]', { salesCount: state.sales?.length || 0, activeCashBoxId: state.activeCashBoxId || '' });
   saveLocalState();
   if (options.sync === false) return;
   if (!cloudHydrated) return;
@@ -1139,8 +1148,10 @@ function isCashOpen() {
 }
 
 function salesForActiveCashBox() {
-  if (!state.activeCashBoxId) return [];
-  return state.sales.filter((sale) => sale.cashBoxId === state.activeCashBoxId);
+  const list = Array.isArray(state.sales) ? state.sales : [];
+  if (!state.activeCashBoxId) return list;
+  const scoped = list.filter((sale) => sale.cashBoxId === state.activeCashBoxId);
+  return scoped.length ? scoped : list;
 }
 
 function isSessionExpired() {
@@ -2593,9 +2604,17 @@ function renderUsers() {
     userManagerCard.appendChild(wrap);
   }
   const saveUsersBtn = document.getElementById('saveUsersChangesBtn');
-  if (saveUsersBtn) saveUsersBtn.onclick = () => {
-    persist();
-    setMsg(homeMessage, 'Usuarios y permisos guardados correctamente.');
+  if (saveUsersBtn) saveUsersBtn.onclick = async () => {
+    console.info('[users][save] Guardando usuarios manualmente', { usersCount: state.users?.length || 0 });
+    persist({ module: 'users' });
+    try {
+      await syncToCloud();
+      await pullFromCloud({ force: true });
+      setMsg(homeMessage, 'Usuarios y permisos guardados correctamente.');
+    } catch (err) {
+      console.error('[users][sync] Error guardando usuarios en cloud', { message: err?.message, code: err?.code, status: err?.status });
+      setMsg(homeMessage, 'No se pudo guardar usuarios en cloud.', false);
+    }
   };
   const exportUsersBtn = document.getElementById('exportUsersBtn');
   if (exportUsersBtn) exportUsersBtn.onclick = exportUsersToExcel;
@@ -2678,12 +2697,23 @@ function importUsersFromExcelFile(file) {
         usersMap.set(key, base);
       });
       state.users = [...usersMap.values()];
+      console.info('[users][import] usuarios cargados desde XLSX', { importedRows: rows.length, usersCount: state.users.length });
       ensureUsers();
-      persist();
+      persist({ module: 'users' });
       renderUsers();
-      alert('Usuarios importados correctamente.');
+      Promise.resolve().then(async () => {
+        try {
+          await syncToCloud();
+          await pullFromCloud({ force: true });
+          console.info('[users][sync] usuarios importados sincronizados', { usersCount: state.users.length });
+          alert('Usuarios importados correctamente.');
+        } catch (err) {
+          console.error('[users][sync] fallo sincronizando usuarios importados', { message: err?.message, code: err?.code, status: err?.status });
+          alert('Usuarios importados localmente, pero falló sincronización cloud.');
+        }
+      });
     } catch (error) {
-      console.error('[users] import error', error);
+      console.error('[users][import] import error', error);
       alert('No se pudo importar el archivo de usuarios.');
     }
   };
@@ -3195,6 +3225,7 @@ function renderSummary() {
   }
 
   const sales = salesForActiveCashBox().filter((s) => !s.carryOverDebt);
+  console.info('[sale][summary] calculando resumen', { activeCashBoxId: state.activeCashBoxId || '', salesCount: sales.length });
   const debtPayments = activeDebtPayments().filter((p) => p.cashBoxId === state.activeCashBoxId);
   const cashSales = sales.reduce((a, s) => a + Number(s.breakdown?.cash || 0), 0);
   const qrSales = sales.reduce((a, s) => a + Number(s.breakdown?.qr || 0), 0);
@@ -3590,6 +3621,7 @@ function renderSalesHistory() {
     salesUserFilter.value = prev;
   }
   const validSales = salesForActiveCashBox().filter((sale) => !sale.carryOverDebt).map((sale) => ({ ...sale, saleStatus: 'OK', saleStatusClass: '' }));
+  console.info('[sale][history] render historial', { activeCashBoxId: state.activeCashBoxId || '', validSalesCount: validSales.length, deletedSalesCount: (state.deletedSales || []).length });
   const deletedSales = (state.deletedSales || []).filter((sale) => !state.activeCashBoxId || sale.cashBoxId === state.activeCashBoxId).map((sale) => ({ ...sale, saleStatus: 'ANULADA', saleStatusClass: 'sale-annulled' }));
   let list = [...validSales, ...deletedSales].slice();
   const searchOrder = (salesOrderSearchInput?.value || '').trim();
@@ -3927,6 +3959,8 @@ function snapshotPayload() {
 
 
 function mergeByIdPreferRemote(remoteList = [], localList = [], tombstones = []) {
+  remoteList = normalizeCollectionToArray(remoteList);
+  localList = normalizeCollectionToArray(localList);
   const map = new Map();
   const removed = new Set((tombstones || []).map((x) => String(x)));
   (remoteList || []).forEach((item) => {
@@ -4005,6 +4039,9 @@ async function syncToCloud(options = {}) {
       try { remoteData = await remoteResp.json(); } catch { remoteData = null; }
       const remoteUpdatedAt = Number(remoteData?.updatedAt || 0);
       const payload = snapshotPayload();
+      console.info('[users][sync]', { usersCount: payload.users?.length || 0 });
+      console.info('[settings][sync]', { title1: payload.settings?.title1 || '', hasLogo: Boolean(payload.settings?.logoDataUrl) });
+      console.info('[sale][sync]', { salesCount: payload.sales?.length || 0, activeCashBoxId: payload.activeCashBoxId || '' });
       const mergedDeleted = mergeDeletedRecordIds(remoteData?.deletedRecordIds, payload.deletedRecordIds);
       payload.deletedRecordIds = mergedDeleted;
       payload.sales = mergeByIdPreferRemote(remoteData?.sales, payload.sales, mergedDeleted.sales);
@@ -4032,6 +4069,7 @@ async function syncToCloud(options = {}) {
       }
       state.lastSyncAt = Number(payload.updatedAt || Date.now());
       saveLocalState();
+      console.info('[settings][firebase] settings escritos en payload compartido', { title1: payload.settings?.title1 || '', hasLogo: Boolean(payload.settings?.logoDataUrl) });
       if (syncStatus) syncStatus.textContent = 'Sincronización enviada.';
       if (token && !includeToken) console.info('[sync][token] Sincronización exitosa ignorando token (token innecesario o inválido).');
       return;
@@ -4480,7 +4518,7 @@ async function registerSale() {
     return setMsg(saleMessage, 'fallo al reservar correlativo', false);
   }
   const sale = { id: uid(), cashBoxId: activeCashBoxId, orderNumber, createdAt: new Date().toISOString(), user: state.currentUser.username, items: state.currentCart.map((i) => ({ ...i })), total: totals.final, payment, breakdown, debtAmount, debtorId, paymentStatus: debtAmount > 0 ? 'pendiente' : 'realizado', orderStatus: 'pendiente', deliveryItems, carryOverDebt: false };
-  console.info('[sale] Venta generada', saleDebugContext({ saleId: sale.id, sale, orderCounters: state.orderCounters }));
+  console.info('[sale][create] Venta generada', saleDebugContext({ saleId: sale.id, sale, orderCounters: state.orderCounters }));
   sale.invoiceSnapshot = buildInvoiceData(sale);
   if (isStockEnabled()) {
     for (const item of state.currentCart) {
@@ -4504,7 +4542,7 @@ async function registerSale() {
   applyWarehouseImpactFromSaleItems(sale.items, { reverse: false, saleId: `#${orderNumberLabel(sale.orderNumber)}` });
   state.sales.unshift(sale);
   state.currentCart = [];
-  persist({ sync: false });
+  persist({ sync: false, module: 'sale' });
   let confirmed = false;
   try {
     await commitSaleToFirebaseTransaction(sale);
@@ -4927,10 +4965,12 @@ function showSettingsMenu() {
 }
 
 async function flushConfigChanges(successMsg) {
-  persist();
+  console.info('[settings][persist] flushConfigChanges', { successMsg });
+  persist({ module: 'settings' });
   applySettings();
   renderOrdersVisibility();
   try {
+    console.info('[settings][sync] sincronizando settings a cloud');
     await syncToCloud();
   } catch (err) {
     console.warn('[config] sync warning', err);
@@ -4940,6 +4980,7 @@ async function flushConfigChanges(successMsg) {
 
 async function saveMainSettings() {
   if (!hasPermission('accessSettings')) return setMsg(homeMessage, 'No tienes permiso para configurar pantalla principal.', false);
+  console.info('[settings][save] Guardando configuración principal (inicio)');
   state.settings.title1 = title1Input?.value?.trim() || 'Mi Cafetería';
   state.settings.title2 = title2Input?.value?.trim() || 'Pantalla principal';
   state.settings.posTitle = posTitleInput?.value?.trim() || 'POS Cafetería';
@@ -4955,6 +4996,7 @@ async function saveMainSettings() {
   state.settings.accentColor = accentColorInput?.value || '#1f7a5c';
   state.settings.bgColor = bgColorInput?.value || '#f7f7fb';
   state.settings.cardColor = cardColorInput?.value || '#ffffff';
+  console.info('[settings][save] state.settings actualizado', { title1: state.settings.title1, title2: state.settings.title2, hasLogo: Boolean(state.settings.logoDataUrl) });
   syncAppConfig();
   const file = logoInput?.files?.[0];
   if (!file) return flushConfigChanges('Configuración guardada.');
