@@ -16,7 +16,7 @@ const state = {
   touchUiConfigByUser: JSON.parse(localStorage.getItem('cafeteria_touch_ui_config_by_user') || '{}'),
   categoryImages: JSON.parse(localStorage.getItem('cafeteria_category_images') || '{}'),
   orderCounters: JSON.parse(localStorage.getItem('cafeteria_order_counters') || '{}'),
-  deletedRecordIds: JSON.parse(localStorage.getItem('cafeteria_deleted_record_ids') || '{"cashClosings":[],"sales":[]}'),
+  deletedRecordIds: JSON.parse(localStorage.getItem('cafeteria_deleted_record_ids') || '{"cashClosings":[],"sales":[],"products":[],"categories":[]}'),
   subcategories: JSON.parse(localStorage.getItem('cafeteria_subcategories') || '{}'),
   generalCash: JSON.parse(localStorage.getItem('cafeteria_general_cash') || '{"efectivo":0,"qr":0,"estado":"CERRADA","openedAt":"","closedAt":"","openedBy":"","closedBy":"","updatedAt":0}'),
   generalClosings: JSON.parse(localStorage.getItem('cafeteria_general_closings') || '[]'),
@@ -618,7 +618,7 @@ function cloudSeedTemplate() {
     touchUiConfigByUser: {},
     categoryImages: {},
     orderCounters: {},
-    deletedRecordIds: { cashClosings: [], sales: [] },
+    deletedRecordIds: { cashClosings: [], sales: [], products: [], categories: [] },
     generalCash: { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 },
     generalClosings: [],
     cashStateVersion: 0,
@@ -685,7 +685,7 @@ function cloudModulePayloadFromState() {
       cashClosings: collectionToObjectById(state.cashClosings || []),
       deletedSales: collectionToObjectById(state.deletedSales || []),
       componentMoves: collectionToObjectById(state.componentMoves || []),
-      deletedRecordIds: state.deletedRecordIds || { cashClosings: [], sales: [] },
+      deletedRecordIds: state.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] },
       updatedAt: Date.now()
     }
   };
@@ -733,7 +733,7 @@ function normalizeCloudModules(raw = {}) {
   flat.componentMoves = normalizeCollectionToArray(history.componentMoves);
   flat.deletedRecordIds = (history.deletedRecordIds && typeof history.deletedRecordIds === 'object' && !Array.isArray(history.deletedRecordIds))
     ? history.deletedRecordIds
-    : { cashClosings: [], sales: [] };
+    : { cashClosings: [], sales: [], products: [], categories: [] };
   flat.updatedAt = Math.max(
     Number(config.updatedAt || 0),
     Number(catalog.updatedAt || 0),
@@ -765,9 +765,11 @@ function normalizeCloudSeedObject(raw) {
   if (!Array.isArray(merged.componentMoves)) merged.componentMoves = [];
   if (!Array.isArray(merged.cashBoxes)) merged.cashBoxes = [];
   if (!merged.orderCounters || typeof merged.orderCounters !== 'object' || Array.isArray(merged.orderCounters)) merged.orderCounters = {};
-  if (!merged.deletedRecordIds || typeof merged.deletedRecordIds !== 'object' || Array.isArray(merged.deletedRecordIds)) merged.deletedRecordIds = { cashClosings: [], sales: [] };
+  if (!merged.deletedRecordIds || typeof merged.deletedRecordIds !== 'object' || Array.isArray(merged.deletedRecordIds)) merged.deletedRecordIds = { cashClosings: [], sales: [], products: [], categories: [] };
   merged.deletedRecordIds.cashClosings = Array.isArray(merged.deletedRecordIds.cashClosings) ? merged.deletedRecordIds.cashClosings : [];
   merged.deletedRecordIds.sales = Array.isArray(merged.deletedRecordIds.sales) ? merged.deletedRecordIds.sales : [];
+  merged.deletedRecordIds.products = Array.isArray(merged.deletedRecordIds.products) ? merged.deletedRecordIds.products : [];
+  merged.deletedRecordIds.categories = Array.isArray(merged.deletedRecordIds.categories) ? merged.deletedRecordIds.categories : [];
   if (!merged.generalCash || typeof merged.generalCash !== 'object' || Array.isArray(merged.generalCash)) merged.generalCash = base.generalCash;
   merged.generalCash = { ...base.generalCash, ...merged.generalCash };
   if (!Array.isArray(merged.generalClosings)) merged.generalClosings = [];
@@ -841,7 +843,7 @@ async function ensureCloudSeedData(options = {}) {
           cashClosings: collectionToObjectById(legacyNormalized.cashClosings),
           deletedSales: collectionToObjectById(legacyNormalized.deletedSales),
           componentMoves: collectionToObjectById(legacyNormalized.componentMoves),
-          deletedRecordIds: legacyNormalized.deletedRecordIds || { cashClosings: [], sales: [] }
+          deletedRecordIds: legacyNormalized.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] }
         };
         const putResp = await fetch(rootUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(modularSeed) });
         if (!putResp.ok) {
@@ -971,7 +973,7 @@ function saveLocalState() {
   safeLocalSet('cafeteria_touch_ui_config_by_user', JSON.stringify(state.touchUiConfigByUser || {}));
   safeLocalSet('cafeteria_category_images', JSON.stringify(categoryImagesForLocalPersistence()));
   safeLocalSet('cafeteria_order_counters', JSON.stringify(state.orderCounters || {}));
-  safeLocalSet('cafeteria_deleted_record_ids', JSON.stringify(state.deletedRecordIds || { cashClosings: [], sales: [] }));
+  safeLocalSet('cafeteria_deleted_record_ids', JSON.stringify(state.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] }));
   safeLocalSet('cafeteria_subcategories', JSON.stringify(state.subcategories || {}));
   safeLocalSet('cafeteria_general_cash', JSON.stringify(state.generalCash || { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 }));
   safeLocalSet('cafeteria_general_closings', JSON.stringify(state.generalClosings || []));
@@ -979,11 +981,12 @@ function saveLocalState() {
   safeLocalSet('cafeteria_module_hydration', JSON.stringify(state.moduleHydration || {}));
 }
 
-function scheduleCloudSync(delayMs = 1200) {
+function scheduleCloudSync(delayMs = 1200, options = {}) {
   if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+  const syncOptions = { ...options };
   cloudSyncTimer = setTimeout(() => {
     cloudSyncTimer = null;
-    syncToCloud().catch((err) => console.error('[sync] scheduled sync failed', err));
+    syncToCloud(syncOptions).catch((err) => console.error('[sync] scheduled sync failed', err));
   }, Math.max(200, Number(delayMs || 1200)));
 }
 
@@ -1264,8 +1267,16 @@ function applyCloudData(data) {
   normalizeCashState();
   const removedClosings = new Set((state.deletedRecordIds?.cashClosings || []).map((x) => String(x)));
   const removedSales = new Set((state.deletedRecordIds?.sales || []).map((x) => String(x)));
+  const removedProducts = new Set((state.deletedRecordIds?.products || []).map((x) => String(x)));
+  const removedCategories = new Set((state.deletedRecordIds?.categories || []).map((x) => String(x).trim()).filter(Boolean));
   if (removedClosings.size) state.cashClosings = (state.cashClosings || []).filter((x) => !removedClosings.has(String(x?.id || '')));
   if (removedSales.size) state.sales = (state.sales || []).filter((x) => !removedSales.has(String(x?.id || '')));
+  if (removedProducts.size) state.products = (state.products || []).filter((x) => !removedProducts.has(String(x?.id || '')));
+  if (removedCategories.size) {
+    state.categories = (state.categories || []).filter((category) => !removedCategories.has(String(category || '').trim()));
+    state.products = (state.products || []).map((product) => ((removedCategories.has(String(product?.category || '').trim())) ? { ...product, category: 'Todos' } : product));
+    state.categoryImages = Object.fromEntries(Object.entries(state.categoryImages || {}).filter(([category]) => !removedCategories.has(String(category || '').trim())));
+  }
   syncAppConfig();
   saveLocalState();
   renderOrdersVisibility();
@@ -1403,7 +1414,7 @@ function persist(options = {}) {
   saveLocalState();
   if (options.sync === false) return;
   if (!cloudHydrated) return;
-  scheduleCloudSync(document.hidden ? 1200 : 600);
+  scheduleCloudSync(document.hidden ? 1200 : 600, { includeHistory: Boolean(options.includeHistory), modules: options.modules });
 }
 
 function cashStatePayloadFromState() {
@@ -4623,8 +4634,39 @@ function mergeByIdLatest(remoteList = [], localList = [], tombstones = []) {
   return [...map.values()];
 }
 
+function mergeByIdLatestPreservingLocalOrder(remoteList = [], localList = [], tombstones = []) {
+  remoteList = normalizeCollectionToArray(remoteList);
+  localList = normalizeCollectionToArray(localList);
+  const removed = new Set((tombstones || []).map((x) => String(x)));
+  const remoteMap = new Map();
+  remoteList.forEach((item) => {
+    if (!item?.id) return;
+    const key = String(item.id);
+    if (removed.has(key)) return;
+    remoteMap.set(key, item);
+  });
+  const ordered = [];
+  const seen = new Set();
+  localList.forEach((item) => {
+    if (!item?.id) return;
+    const key = String(item.id);
+    if (removed.has(key) || seen.has(key)) return;
+    const remote = remoteMap.get(key);
+    ordered.push(!remote || recordTimestamp(item) >= recordTimestamp(remote) ? item : remote);
+    seen.add(key);
+  });
+  remoteList.forEach((item) => {
+    if (!item?.id) return;
+    const key = String(item.id);
+    if (removed.has(key) || seen.has(key)) return;
+    ordered.push(item);
+    seen.add(key);
+  });
+  return ordered;
+}
+
 function mergeDeletedRecordIds(remoteDeleted = {}, localDeleted = {}) {
-  const keys = ['cashClosings', 'sales'];
+  const keys = ['cashClosings', 'sales', 'products', 'categories'];
   const out = {};
   keys.forEach((key) => {
     const remote = Array.isArray(remoteDeleted?.[key]) ? remoteDeleted[key] : [];
@@ -4720,10 +4762,10 @@ async function syncToCloud(options = {}) {
         const localModule = localModules[moduleName] || {};
         let payload = { ...localModule };
         if (moduleName === 'catalog') {
-          const mergedProducts = mergeByIdLatest(remoteModule?.products, localModule?.products);
+          const mergedProducts = mergeByIdLatestPreservingLocalOrder(remoteModule?.products, localModule?.products, state.deletedRecordIds?.products);
           payload.products = collectionToObjectById(mergedProducts);
         } else if (moduleName === 'operations') {
-          const mergedSales = mergeByIdLatest(remoteModule?.sales, localModule?.sales);
+          const mergedSales = mergeByIdLatest(remoteModule?.sales, localModule?.sales, state.deletedRecordIds?.sales);
           const mergedOutflows = mergeByIdLatest(remoteModule?.outflows, localModule?.outflows);
           const mergedDebt = mergeByIdLatest(remoteModule?.debtPayments, localModule?.debtPayments);
           const mergedCashState = mergeCashOperationsState(remoteModule, localModule);
@@ -4743,6 +4785,11 @@ async function syncToCloud(options = {}) {
           payload.componentMoves = collectionToObjectById(mergeByIdPreferRemote(remoteModule?.componentMoves, localModule?.componentMoves));
         } else if (moduleName === 'config') {
           payload = sanitizeCloudPayload(payload, remoteModule);
+          const removedCategories = new Set((state.deletedRecordIds?.categories || []).map((x) => String(x).trim()).filter(Boolean));
+          if (removedCategories.size) {
+            payload.categories = (payload.categories || []).filter((category) => !removedCategories.has(String(category || '').trim()));
+            payload.categoryImages = Object.fromEntries(Object.entries(payload.categoryImages || {}).filter(([category]) => !removedCategories.has(String(category || '').trim())));
+          }
         }
         payload.updatedAt = Math.max(Number(payload.updatedAt || 0), Number(remoteModule?.updatedAt || 0), Date.now());
         if (shouldBlockModuleWrite(moduleName, payload, remoteModule)) continue;
@@ -6258,8 +6305,13 @@ function wireEvents() {
     }
     const del = e.target.closest('button[data-prod-del]');
     if (!del) return;
-    state.products = state.products.filter((p) => p.id !== del.dataset.prodDel);
-    persist();
+    const removedId = String(del.dataset.prodDel || '');
+    if (!removedId) return;
+    state.products = state.products.filter((p) => p.id !== removedId);
+    state.deletedRecordIds = state.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] };
+    if (!Array.isArray(state.deletedRecordIds.products)) state.deletedRecordIds.products = [];
+    if (!state.deletedRecordIds.products.includes(removedId)) state.deletedRecordIds.products.push(removedId);
+    persist({ includeHistory: true });
     renderProducts();
     renderSaleSelectors();
     renderTouchSaleUi();
@@ -6280,10 +6332,15 @@ function wireEvents() {
     if (imgDelBtn) { const key = imgDelBtn.dataset.catImgDel || ''; const previous = state.categoryImages[key] || ''; delete state.categoryImages[key]; const ok = persistImageChange(() => { if (previous) state.categoryImages[key] = previous; }); if (!ok) return; renderProducts(); renderSaleSelectors(); renderTouchSaleUi(); return; }
     const b = e.target.closest('button[data-cat-del]');
     if (!b) return;
-    const cat = b.dataset.catDel;
+    const cat = String(b.dataset.catDel || '').trim();
+    if (!cat) return;
     state.categories = state.categories.filter((c) => c !== cat);
     state.products.forEach((p) => { if (p.category === cat) p.category = 'Todos'; });
-    persist();
+    if (state.categoryImages && Object.prototype.hasOwnProperty.call(state.categoryImages, cat)) delete state.categoryImages[cat];
+    state.deletedRecordIds = state.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] };
+    if (!Array.isArray(state.deletedRecordIds.categories)) state.deletedRecordIds.categories = [];
+    if (!state.deletedRecordIds.categories.includes(cat)) state.deletedRecordIds.categories.push(cat);
+    persist({ includeHistory: true });
     renderProducts();
     renderSaleSelectors();
   });
@@ -6418,10 +6475,10 @@ function wireEvents() {
       }
       applyWarehouseImpactFromSaleItems(sale.items, { reverse: true, saleId: `#${orderNumberLabel(sale.orderNumber)}` });
       state.sales = state.sales.filter((x) => x.id !== sale.id);
-      state.deletedRecordIds = state.deletedRecordIds || { cashClosings: [], sales: [] };
+      state.deletedRecordIds = state.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] };
       if (!Array.isArray(state.deletedRecordIds.sales)) state.deletedRecordIds.sales = [];
       if (!state.deletedRecordIds.sales.includes(sale.id)) state.deletedRecordIds.sales.push(sale.id);
-      persist();
+      persist({ includeHistory: true });
       refreshFinancialViews();
       renderWarehouse();
       return;
@@ -6671,9 +6728,11 @@ async function bootstrap() {
   });
 
   if (!state.orderCounters || typeof state.orderCounters !== 'object') state.orderCounters = {};
-  if (!state.deletedRecordIds || typeof state.deletedRecordIds !== 'object') state.deletedRecordIds = { cashClosings: [], sales: [] };
+  if (!state.deletedRecordIds || typeof state.deletedRecordIds !== 'object') state.deletedRecordIds = { cashClosings: [], sales: [], products: [], categories: [] };
   if (!Array.isArray(state.deletedRecordIds.cashClosings)) state.deletedRecordIds.cashClosings = [];
   if (!Array.isArray(state.deletedRecordIds.sales)) state.deletedRecordIds.sales = [];
+  if (!Array.isArray(state.deletedRecordIds.products)) state.deletedRecordIds.products = [];
+  if (!Array.isArray(state.deletedRecordIds.categories)) state.deletedRecordIds.categories = [];
   normalizeWarehouseData();
   normalizeDebtPaymentsData();
   normalizeCashState();
