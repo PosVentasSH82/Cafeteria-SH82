@@ -3050,6 +3050,11 @@ function renderDebtors() {
     return `<tr><td>${personFullName(person) || 'Persona eliminada'}</td><td>${money(total)}</td><td>${sales.length}</td><td><button class="secondary" data-debtor-id="${personId}" type="button">Ver detalles</button></td></tr>`;
   });
   debtPeopleTable.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4">Sin deudas pendientes.</td></tr>';
+  if (state.activeDebtorId && !grouped.has(state.activeDebtorId)) {
+    state.activeDebtorId = '';
+    debtPersonTitle.textContent = 'Selecciona una persona para ver sus deudas pendientes';
+    debtPersonDetailsTable.innerHTML = '<tr><td colspan="5">Sin deudas pendientes para mostrar.</td></tr>';
+  }
   if (debtPersonTotal && !state.activeDebtorId) debtPersonTotal.textContent = 'Deuda total: Bs 0.00';
   debtPeopleTable.onclick = (e) => {
     const btn = e.target.closest('button[data-debtor-id]');
@@ -3618,74 +3623,79 @@ function renderImageRetryHint(kind, key, value) {
 
 function getOrderedCategories(options = {}) {
   const includeHidden = options.includeHidden !== false;
-  const productCategories = [...new Set((state.products || [])
-    .filter((p) => includeHidden || !p.hidden)
-    .map((p) => String(p.category || '').trim())
-    .filter(Boolean))];
   const ordered = [];
   (state.categories || []).forEach((category) => {
     const name = String(category || '').trim();
     if (name && !ordered.includes(name)) ordered.push(name);
   });
-  productCategories.forEach((category) => {
-    if (!ordered.includes(category)) ordered.push(category);
+  (state.products || []).forEach((product) => {
+    if (!includeHidden && product?.hidden) return;
+    const category = String(product?.category || '').trim();
+    if (category && !ordered.includes(category)) ordered.push(category);
   });
   return ordered;
 }
 
-function moveCategory(category = '', direction = 0) {
-  const categories = getOrderedCategories({ includeHidden: true });
-  const index = categories.indexOf(category);
-  if (index < 0) return false;
-  const nextIndex = index + Number(direction || 0);
-  if (nextIndex < 0 || nextIndex >= categories.length) return false;
-  const swapped = categories[index];
-  categories[index] = categories[nextIndex];
-  categories[nextIndex] = swapped;
-  state.categories = categories;
-  return true;
+function reorderProductsWithinCategory(products = [], productId = '', direction = 0) {
+  const list = Array.isArray(products) ? products.slice() : [];
+  const index = list.findIndex((product) => product?.id === productId);
+  if (index < 0) return list;
+  const category = list[index]?.category || '';
+  const siblings = list
+    .map((product, idx) => ({ product, idx }))
+    .filter(({ product }) => (product?.category || '') === category);
+  const siblingIndex = siblings.findIndex(({ product }) => product?.id === productId);
+  const targetSiblingIndex = siblingIndex + Number(direction || 0);
+  if (siblingIndex < 0 || targetSiblingIndex < 0 || targetSiblingIndex >= siblings.length) return list;
+  const sourceIndex = siblings[siblingIndex].idx;
+  const targetIndex = siblings[targetSiblingIndex].idx;
+  const temp = list[sourceIndex];
+  list[sourceIndex] = list[targetIndex];
+  list[targetIndex] = temp;
+  return list;
+}
+
+function moveProductWithinCategory(productId = '', direction = 0) {
+  const nextProducts = reorderProductsWithinCategory(state.products || [], productId, direction);
+  const changed = nextProducts.some((product, index) => product?.id !== state.products?.[index]?.id);
+  if (changed) state.products = nextProducts;
+  return changed;
 }
 
 function renderProducts() {
   const selectedCategory = productCategory?.value || '';
   const orderedCategories = getOrderedCategories({ includeHidden: true });
-  const categoryOrder = new Map(orderedCategories.map((category, index) => [category, index]));
-  const sorted = state.products.slice().sort((a, b) => {
-    const catDiff = (categoryOrder.get(a.category || '') ?? Number.MAX_SAFE_INTEGER) - (categoryOrder.get(b.category || '') ?? Number.MAX_SAFE_INTEGER);
-    if (catDiff !== 0) return catDiff;
-    const hiddenDiff = Number(Boolean(a.hidden)) - Number(Boolean(b.hidden));
-    if (hiddenDiff !== 0) return hiddenDiff;
-    return String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' });
-  });
   const productsHead = productsTable?.closest('table')?.querySelector('thead tr');
   if (productsHead) productsHead.innerHTML = '<th>Categoría</th><th>Producto</th><th>Precio</th><th>Acciones</th><th>Imagen</th>';
   const categoriesHead = categoriesTable?.closest('table')?.querySelector('thead tr');
   if (categoriesHead) categoriesHead.innerHTML = '<th>Categoría</th><th>Acciones</th><th>Imagen</th>';
   if (productsTable) {
     const rows = [];
-    let currentCategory = '';
-    sorted.forEach((p) => {
-      const category = p.category || 'Sin categoría';
-      if (category !== currentCategory) {
-        currentCategory = category;
-        rows.push(`<tr class="products-category-divider"><td colspan="5"><strong>${escapeHtml(category)}</strong></td></tr>`);
-      }
-      const st = getImageUploadStatus('product', p.id);
-      const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen';
-      const prodSrc = resolveImageSource(p.imageUrl || p.imageDataUrl);
-      const imageBlock = prodSrc ? `<div class="image-cell"><img class="image-thumb" src="${prodSrc}" alt="${p.name}" loading="lazy" /><button class="danger" data-prod-img-del="${p.id}" type="button">X</button></div>` : '<span class="muted">Sin imagen</span>';
-      const err = st?.error ? `<div class="upload-error">${st.error}</div>` : '';
-      const retry = renderImageRetryHint('product', p.id, p.imageUrl || p.imageDataUrl);
-      rows.push(`<tr><td>${escapeHtml(category)}</td><td>${escapeHtml(p.name || '')}${p.hidden ? ' <span class="muted">(Oculto)</span>' : ''}</td><td>${money(p.price)}</td><td><button class="secondary" data-prod-edit="${p.id}" type="button">Editar</button> <button class="secondary" data-prod-img="${p.id}" type="button" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> <button class="secondary" data-prod-hide="${p.id}" type="button">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class="secondary" data-prod-del="${p.id}" type="button">Eliminar</button></td><td>${imageBlock}${renderImageUploadProgress('product', p.id)}${err}${retry}</td></tr>`);
+    orderedCategories.forEach((category) => {
+      const productsInCategory = (state.products || []).filter((product) => (product.category || '') === category);
+      if (!productsInCategory.length) return;
+      rows.push(`<tr class="products-category-divider"><td colspan="5"><strong>${escapeHtml(category)}</strong></td></tr>`);
+      productsInCategory.forEach((p, index) => {
+        const currentCategory = p.category || 'Sin categoría';
+        const st = getImageUploadStatus('product', p.id);
+        const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen';
+        const prodSrc = resolveImageSource(p.imageUrl || p.imageDataUrl);
+        const imageBlock = prodSrc ? `<div class="image-cell"><img class="image-thumb" src="${prodSrc}" alt="${p.name}" loading="lazy" /><button class="danger" data-prod-img-del="${p.id}" type="button">X</button></div>` : '<span class="muted">Sin imagen</span>';
+        const err = st?.error ? `<div class="upload-error">${st.error}</div>` : '';
+        const retry = renderImageRetryHint('product', p.id, p.imageUrl || p.imageDataUrl);
+        const upDisabled = index === 0 ? 'disabled' : '';
+        const downDisabled = index === productsInCategory.length - 1 ? 'disabled' : '';
+        rows.push(`<tr><td>${escapeHtml(currentCategory)}</td><td>${escapeHtml(p.name || '')}${p.hidden ? ' <span class="muted">(Oculto)</span>' : ''}</td><td>${money(p.price)}</td><td><button class="secondary" data-prod-up="${p.id}" type="button" ${upDisabled}>↑</button> <button class="secondary" data-prod-down="${p.id}" type="button" ${downDisabled}>↓</button> <button class="secondary" data-prod-edit="${p.id}" type="button">Editar</button> <button class="secondary" data-prod-img="${p.id}" type="button" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> <button class="secondary" data-prod-hide="${p.id}" type="button">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class="secondary" data-prod-del="${p.id}" type="button">Eliminar</button></td><td>${imageBlock}${renderImageUploadProgress('product', p.id)}${err}${retry}</td></tr>`);
+      });
     });
     productsTable.innerHTML = rows.join('');
   }
-  if (categoriesTable) categoriesTable.innerHTML = orderedCategories.map((c, index) => { const st = getImageUploadStatus('category', c); const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen'; const catSrc = resolveImageSource(state.categoryImages?.[c]); const imageBlock = catSrc ? `<div class="image-cell"><img class="image-thumb" src="${catSrc}" alt="${c}" loading="lazy" /><button class="danger" data-cat-img-del="${c}" type="button">X</button></div>` : '<span class="muted">Sin imagen</span>'; const err = st?.error ? `<div class="upload-error">${st.error}</div>` : ''; const retry = renderImageRetryHint('category', c, state.categoryImages?.[c]); const upDisabled = index === 0 ? 'disabled' : ''; const downDisabled = index === orderedCategories.length - 1 ? 'disabled' : ''; return `<tr><td>${escapeHtml(c)}</td><td><div class="category-actions"><button class="secondary" data-cat-up="${c}" type="button" ${upDisabled}>↑</button><button class="secondary" data-cat-down="${c}" type="button" ${downDisabled}>↓</button><button class="secondary" data-cat-img="${c}" type="button" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> ${c === 'Todos' ? '' : `<button class="secondary" data-cat-del="${c}" type="button">Eliminar</button>`}</div></td><td>${imageBlock}${renderImageUploadProgress('category', c)}${err}${retry}</td></tr>`; }).join('');
+  if (categoriesTable) categoriesTable.innerHTML = (state.categories || []).map((c) => { const st = getImageUploadStatus('category', c); const uploadBtnText = st?.uploading ? 'Subiendo...' : 'Subir imagen'; const catSrc = resolveImageSource(state.categoryImages?.[c]); const imageBlock = catSrc ? `<div class="image-cell"><img class="image-thumb" src="${catSrc}" alt="${c}" loading="lazy" /><button class="danger" data-cat-img-del="${c}" type="button">X</button></div>` : '<span class="muted">Sin imagen</span>'; const err = st?.error ? `<div class="upload-error">${st.error}</div>` : ''; const retry = renderImageRetryHint('category', c, state.categoryImages?.[c]); return `<tr><td>${c}</td><td><button class="secondary" data-cat-img="${c}" type="button" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> ${c === 'Todos' ? '' : `<button class="secondary" data-cat-del="${c}" type="button">Eliminar</button>`}</td><td>${imageBlock}${renderImageUploadProgress('category', c)}${err}${retry}</td></tr>`; }).join('');
   if (productCategory) {
     productCategory.innerHTML = orderedCategories.map((c) => `<option value="${c}">${c}</option>`).join('');
     if (selectedCategory && orderedCategories.includes(selectedCategory)) productCategory.value = selectedCategory;
   }
-  if (comboProductsSelect) comboProductsSelect.innerHTML = sorted.filter((p) => !p.hidden).map((p) => `<option value="${p.id}">${p.category || '-'} · ${p.name}</option>`).join('');
+  if (comboProductsSelect) comboProductsSelect.innerHTML = state.products.filter((p) => !p.hidden).map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
   if (openStockBtn) openStockBtn.classList.toggle('hidden', !appConfig.stockActivo);
   renderComboBuilder();
   if (appConfig.stockActivo) renderStockView();
@@ -4282,6 +4292,50 @@ function openSaleEditModal(sale) {
 }
 
 
+function applyDebtPaymentToSales(targetSales = [], options = {}) {
+  const method = options.method || 'efectivo';
+  const paidAt = options.paidAt || new Date().toISOString();
+  const paidBy = options.paidBy || '-';
+  const cashBoxId = options.cashBoxId || '';
+  const totalDebtAmount = targetSales.reduce((sum, sale) => sum + Number(sale?.debtAmount || 0), 0);
+  let remainingCashMixed = method === 'mixto' ? Math.max(0, Math.min(totalDebtAmount, Number(options.mixedCashAmount || 0))) : 0;
+  const createdPayments = [];
+  targetSales.forEach((sale) => {
+    const amount = Number(sale?.debtAmount || 0);
+    if (amount <= 0) return;
+    let cashPaid = 0;
+    let qrPaid = 0;
+    if (method === 'efectivo') cashPaid = amount;
+    if (method === 'qr') qrPaid = amount;
+    if (method === 'mixto') {
+      cashPaid = Math.min(amount, remainingCashMixed);
+      qrPaid = amount - cashPaid;
+      remainingCashMixed -= cashPaid;
+    }
+    sale.debtAmount = 0;
+    sale.paymentStatus = 'realizado';
+    sale.modifiedAt = Date.now();
+    createdPayments.push({
+      id: uid(),
+      paidAt,
+      modifiedAt: Date.now(),
+      saleCreatedAt: sale.createdAt,
+      debtorId: sale.debtorId,
+      saleId: sale.id,
+      method,
+      amount,
+      cashAmount: cashPaid,
+      qrAmount: qrPaid,
+      cashBoxId,
+      paidBy,
+      archivado: false,
+      anulado: false,
+      anuladoPorVentaId: ''
+    });
+  });
+  return { totalDebtAmount, createdPayments };
+}
+
 function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
   document.getElementById('debtPayOverlay')?.remove();
   const overlay = document.createElement('div');
@@ -4306,58 +4360,36 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
   cashEl?.addEventListener('input', sync);
   sync();
   document.getElementById('dpBackBtn')?.addEventListener('click', () => overlay.remove());
-  document.getElementById('dpPayBtn')?.addEventListener('click', () => {
+  document.getElementById('dpPayBtn')?.addEventListener('click', async () => {
     console.info('[debt][pay-start]', { saleIds, debtorId });
     const method = methodEl?.value || 'efectivo';
     const targets = getTargetSales().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     if (!targets.length) { alert('No hay deudas pendientes para pagar.'); return; }
     const activeCash = getActiveCashBox();
-    const hasActiveCash = Boolean(activeCash);
-    const totalDebtAmount = targets.reduce((a, s) => a + Number(s.debtAmount || 0), 0);
-    if (totalDebtAmount <= 0) { alert('La deuda seleccionada ya fue saldada.'); return; }
-    let remainingCashMixed = method === 'mixto' ? Math.max(0, Math.min(totalDebtAmount, Number(cashEl?.value || 0))) : 0;
-    targets.forEach((sale) => {
-      const amount = Number(sale.debtAmount || 0);
-      if (amount <= 0) return;
-      let cashPaid = 0;
-      let qrPaid = 0;
-      if (method === 'efectivo') cashPaid = amount;
-      if (method === 'qr') qrPaid = amount;
-      if (method === 'mixto') {
-        cashPaid = Math.min(amount, remainingCashMixed);
-        qrPaid = amount - cashPaid;
-        remainingCashMixed -= cashPaid;
-      }
-      sale.debtAmount = 0;
-      sale.paymentStatus = 'realizado';
-      sale.modifiedAt = Date.now();
-      state.debtPayments.unshift({
-        id: uid(),
-        paidAt: new Date().toISOString(),
-        saleCreatedAt: sale.createdAt,
-        debtorId: sale.debtorId,
-        saleId: sale.id,
-        method,
-        amount,
-        cashAmount: cashPaid,
-        qrAmount: qrPaid,
-        cashBoxId: hasActiveCash ? activeCash.id : '',
-        paidBy: state.currentUser?.username || '-',
-        archivado: false,
-        anulado: false,
-        anuladoPorVentaId: ''
-      });
+    const result = applyDebtPaymentToSales(targets, {
+      method,
+      mixedCashAmount: Number(cashEl?.value || 0),
+      paidAt: new Date().toISOString(),
+      paidBy: state.currentUser?.username || '-',
+      cashBoxId: activeCash?.id || ''
     });
-    persist({ module: 'sale' });
+    if (result.totalDebtAmount <= 0 || !result.createdPayments.length) { alert('La deuda seleccionada ya fue saldada.'); return; }
+    state.debtPayments.unshift(...result.createdPayments.reverse());
+    persist({ module: 'sale', sync: false });
     console.info('[debt][persist]', { debtPaymentsCount: state.debtPayments?.length || 0 });
     renderDebtors();
     renderSalesHistory();
     renderSummary();
     renderSoldProductsList();
     renderDebtPayments();
-    Promise.resolve().then(() => syncToCloud({ modules: ['operations'] })).then(() => console.info('[debt][sync] ok')).catch((err) => console.error('[debt][sync] error', err));
-    Promise.resolve().then(() => pullFromCloud({ force: true, modules: ['operations'] })).then(() => console.info('[debt][pull] ok')).catch(() => {});
     overlay.remove();
+    try {
+      await syncToCloud({ modules: ['operations'], reason: 'debt-payment' });
+      console.info('[debt][sync] ok');
+    } catch (err) {
+      console.error('[debt][sync] error', err);
+      scheduleCloudSync(600);
+    }
   });
 }
 
@@ -6164,6 +6196,24 @@ function wireEvents() {
     if (comboCalculatedTotal) comboCalculatedTotal.textContent = money(total);
   });
   productsTable?.addEventListener('click', (e) => {
+    const up = e.target.closest('button[data-prod-up]');
+    if (up) {
+      if (!moveProductWithinCategory(up.dataset.prodUp, -1)) return;
+      persist();
+      renderProducts();
+      renderSaleSelectors();
+      renderTouchSaleUi();
+      return;
+    }
+    const down = e.target.closest('button[data-prod-down]');
+    if (down) {
+      if (!moveProductWithinCategory(down.dataset.prodDown, 1)) return;
+      persist();
+      renderProducts();
+      renderSaleSelectors();
+      renderTouchSaleUi();
+      return;
+    }
     const edit = e.target.closest('button[data-prod-edit]');
     if (edit) {
       openProductEditModal(edit.dataset.prodEdit);
@@ -6216,10 +6266,6 @@ function wireEvents() {
   });
 
   categoriesTable?.addEventListener('click', (e) => {
-    const upBtn = e.target.closest('button[data-cat-up]');
-    if (upBtn) { if (!moveCategory(upBtn.dataset.catUp, -1)) return; persist(); renderProducts(); renderSaleSelectors(); renderTouchSaleUi(); return; }
-    const downBtn = e.target.closest('button[data-cat-down]');
-    if (downBtn) { if (!moveCategory(downBtn.dataset.catDown, 1)) return; persist(); renderProducts(); renderSaleSelectors(); renderTouchSaleUi(); return; }
     const imgBtn = e.target.closest('button[data-cat-img]');
     if (imgBtn) { openImageUploadForCategory(imgBtn.dataset.catImg); return; }
     const retryCatImg = e.target.closest('button[data-img-retry-kind="category"]');
