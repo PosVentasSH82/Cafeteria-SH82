@@ -19,7 +19,9 @@ const state = {
   deletedRecordIds: JSON.parse(localStorage.getItem('cafeteria_deleted_record_ids') || '{"cashClosings":[],"sales":[]}'),
   subcategories: JSON.parse(localStorage.getItem('cafeteria_subcategories') || '{}'),
   generalCash: JSON.parse(localStorage.getItem('cafeteria_general_cash') || '{"efectivo":0,"qr":0,"estado":"CERRADA","openedAt":"","closedAt":"","openedBy":"","closedBy":"","updatedAt":0}'),
-  generalClosings: JSON.parse(localStorage.getItem('cafeteria_general_closings') || '[]')
+  generalClosings: JSON.parse(localStorage.getItem('cafeteria_general_closings') || '[]'),
+  cloudModuleMeta: JSON.parse(localStorage.getItem('cafeteria_cloud_module_meta') || '{}'),
+  moduleHydration: JSON.parse(localStorage.getItem('cafeteria_module_hydration') || '{}')
 };
 
 let sessionWatchInterval = null;
@@ -371,6 +373,108 @@ let firebaseRealtimeListenerUrl = '';
 let realtimeReconnectTimer = null;
 const CLOUD_PULL_MIN_INTERVAL_MS = 2500;
 const CLOUD_POLL_INTERVAL_MS = 8000;
+const MODULE_DEFAULT_BOOT_ORDER = ['config', 'operations'];
+const MODULE_BACKGROUND_BOOT_ORDER = ['catalog', 'warehouse'];
+const MODULE_HISTORY_ORDER = ['history'];
+const MODULE_CRITICAL_SYNC_GUARDS = {
+  config: true,
+  operations: true,
+  catalog: false,
+  warehouse: false,
+  history: false
+};
+const MODULE_EMPTY_GUARDS = {
+  config: ['settings', 'categories', 'users'],
+  operations: ['cashBoxes', 'activeCashBoxId', 'systemStatus'],
+  catalog: ['products'],
+  warehouse: ['components'],
+  history: []
+};
+
+function safeJsonParse(raw, fallback) {
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
+function approxPayloadBytes(value) {
+  try {
+    return new Blob([JSON.stringify(value ?? null)]).size;
+  } catch {
+    try { return JSON.stringify(value ?? null).length; } catch { return 0; }
+  }
+}
+
+function logCloudTransfer(kind, path, payload, meta = {}) {
+  const records = Array.isArray(payload)
+    ? payload.length
+    : (payload && typeof payload === 'object')
+      ? Object.keys(payload).length
+      : (payload == null ? 0 : 1);
+  console.info(`[cloud][${kind}]`, {
+    path,
+    records,
+    approxBytes: approxPayloadBytes(payload),
+    ...meta
+  });
+}
+
+function moduleMetaEntry(moduleName) {
+  if (!state.cloudModuleMeta || typeof state.cloudModuleMeta !== 'object') state.cloudModuleMeta = {};
+  if (!state.cloudModuleMeta[moduleName] || typeof state.cloudModuleMeta[moduleName] !== 'object') state.cloudModuleMeta[moduleName] = {};
+  return state.cloudModuleMeta[moduleName];
+}
+
+function setModuleMeta(moduleName, patch = {}) {
+  state.cloudModuleMeta = { ...(state.cloudModuleMeta || {}), [moduleName]: { ...moduleMetaEntry(moduleName), ...patch } };
+}
+
+function markModuleHydrated(moduleName, hydrated = true, extra = {}) {
+  state.moduleHydration = { ...(state.moduleHydration || {}), [moduleName]: { hydrated: Boolean(hydrated), at: Date.now(), ...extra } };
+}
+
+function isModuleHydrated(moduleName) {
+  return Boolean(state.moduleHydration?.[moduleName]?.hydrated);
+}
+
+function getModuleUpdatedAt(moduleName) {
+  return Number(moduleMetaEntry(moduleName).updatedAt || 0);
+}
+
+function isMeaningfullyEmpty(value) {
+  if (value == null) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object') return Object.keys(value).length === 0;
+  if (typeof value === 'string') return value.trim() === '';
+  return false;
+}
+
+function shouldBlockModuleWrite(moduleName, payload, remoteModule = {}) {
+  if (!MODULE_CRITICAL_SYNC_GUARDS[moduleName]) return false;
+  if (!isModuleHydrated(moduleName)) {
+    console.warn('[sync][guard] módulo crítico no hidratado, escritura bloqueada', { moduleName });
+    return true;
+  }
+  const guardedKeys = MODULE_EMPTY_GUARDS[moduleName] || [];
+  const suspicious = guardedKeys.some((key) => isMeaningfullyEmpty(payload?.[key]) && !isMeaningfullyEmpty(remoteModule?.[key]));
+  if (suspicious) {
+    console.warn('[sync][guard] payload crítico sospechosamente vacío, escritura bloqueada', { moduleName, guardedKeys });
+    return true;
+  }
+  const remoteUpdatedAt = Number(remoteModule?.updatedAt || 0);
+  const localUpdatedAt = Number(payload?.updatedAt || 0);
+  if (remoteUpdatedAt > localUpdatedAt && localUpdatedAt > 0) {
+    console.warn('[sync][guard] remote es más nuevo que local, escritura bloqueada', { moduleName, remoteUpdatedAt, localUpdatedAt });
+    return true;
+  }
+  return false;
+}
+
+function recordModuleRead(moduleName, payload, reason = 'pull') {
+  setModuleMeta(moduleName, { updatedAt: Number(payload?.updatedAt || getModuleUpdatedAt(moduleName) || 0), lastReadAt: Date.now(), lastReadReason: reason });
+}
+
+function recordModuleWrite(moduleName, payload, reason = 'sync') {
+  setModuleMeta(moduleName, { updatedAt: Number(payload?.updatedAt || Date.now()), lastWriteAt: Date.now(), lastWriteReason: reason });
+}
 
 function syncAppConfig() {
   appConfig = {
@@ -513,6 +617,8 @@ function cloudSeedTemplate() {
     deletedRecordIds: { cashClosings: [], sales: [] },
     generalCash: { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 },
     generalClosings: [],
+    cashStateVersion: 0,
+    cashStateUpdatedAt: 0,
     updatedAt: 0
   };
 }
@@ -562,6 +668,8 @@ function cloudModulePayloadFromState() {
       cashSession: state.cashSession || null,
       generalCash: state.generalCash || { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 },
       generalClosings: state.generalClosings || [],
+      cashStateVersion: Number(state.cashStateVersion || 0),
+      cashStateUpdatedAt: Number(state.cashStateUpdatedAt || 0),
       updatedAt: Date.now()
     },
     warehouse: {
@@ -610,6 +718,8 @@ function normalizeCloudModules(raw = {}) {
   flat.cashSession = (operations.cashSession && typeof operations.cashSession === 'object') ? operations.cashSession : null;
   flat.generalCash = (operations.generalCash && typeof operations.generalCash === 'object') ? operations.generalCash : flat.generalCash;
   flat.generalClosings = Array.isArray(operations.generalClosings) ? operations.generalClosings : [];
+  flat.cashStateVersion = Number(operations.cashStateVersion || 0);
+  flat.cashStateUpdatedAt = Number(operations.cashStateUpdatedAt || 0);
 
   flat.components = normalizeCollectionToArray(warehouse.components);
   flat.componentLinks = (warehouse.componentLinks && typeof warehouse.componentLinks === 'object' && !Array.isArray(warehouse.componentLinks)) ? warehouse.componentLinks : {};
@@ -657,6 +767,8 @@ function normalizeCloudSeedObject(raw) {
   if (!merged.generalCash || typeof merged.generalCash !== 'object' || Array.isArray(merged.generalCash)) merged.generalCash = base.generalCash;
   merged.generalCash = { ...base.generalCash, ...merged.generalCash };
   if (!Array.isArray(merged.generalClosings)) merged.generalClosings = [];
+  merged.cashStateVersion = Number(merged.cashStateVersion || 0);
+  merged.cashStateUpdatedAt = Number(merged.cashStateUpdatedAt || 0);
   if (!merged.settings || typeof merged.settings !== 'object' || Array.isArray(merged.settings)) merged.settings = {};
   if (!merged.userSalesModes || typeof merged.userSalesModes !== 'object' || Array.isArray(merged.userSalesModes)) merged.userSalesModes = {};
   if (!merged.touchUiConfigByUser || typeof merged.touchUiConfigByUser !== 'object' || Array.isArray(merged.touchUiConfigByUser)) merged.touchUiConfigByUser = {};
@@ -859,6 +971,8 @@ function saveLocalState() {
   safeLocalSet('cafeteria_subcategories', JSON.stringify(state.subcategories || {}));
   safeLocalSet('cafeteria_general_cash', JSON.stringify(state.generalCash || { efectivo: 0, qr: 0, estado: 'CERRADA', openedAt: '', closedAt: '', openedBy: '', closedBy: '', updatedAt: 0 }));
   safeLocalSet('cafeteria_general_closings', JSON.stringify(state.generalClosings || []));
+  safeLocalSet('cafeteria_cloud_module_meta', JSON.stringify(state.cloudModuleMeta || {}));
+  safeLocalSet('cafeteria_module_hydration', JSON.stringify(state.moduleHydration || {}));
 }
 
 function scheduleCloudSync(delayMs = 1200) {
@@ -1054,12 +1168,25 @@ async function cloudReadPath(path, { includeToken = true } = {}) {
   if (!url) throw new Error('[cloud] URL inválida para lectura.');
   const resp = await fetch(url);
   if (!resp.ok) throw Object.assign(new Error(`[cloud] GET ${path} fallo (${resp.status})`), { status: resp.status, path });
-  return resp.json();
+  const text = await resp.text();
+  const data = text ? safeJsonParse(text, null) : null;
+  logCloudTransfer('read', path, data, { source: 'fetch', includeToken, status: resp.status });
+  return data;
+}
+
+async function fetchModuleUpdatedAt(moduleName, { includeToken = true, reason = 'poll' } = {}) {
+  const path = CLOUD_MODULE_PATHS[moduleName];
+  if (!path) return 0;
+  const stamp = Number(await cloudReadPath(`${path}/updatedAt`, { includeToken }) || 0);
+  console.info('[cloud][module-stamp]', { moduleName, stamp, reason, cachedStamp: getModuleUpdatedAt(moduleName) });
+  if (stamp) setModuleMeta(moduleName, { updatedAt: stamp, lastStampAt: Date.now(), lastStampReason: reason });
+  return stamp;
 }
 
 async function cloudWritePath(path, value, { method = 'PUT', includeToken = true } = {}) {
   const url = cloudPathUrl(path, { includeToken });
   if (!url) throw new Error('[cloud] URL inválida para escritura.');
+  logCloudTransfer('write', path, value, { source: 'fetch', includeToken, method });
   const resp = await fetch(url, {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -1122,7 +1249,7 @@ function applyCloudData(data) {
   console.info('[debt][apply]', { debtPaymentsCount: Array.isArray(normalized.debtPayments) ? normalized.debtPayments.length : -1 });
   state.lastSyncAt = Number(normalized.updatedAt || Date.now());
   state.forceLogoutAt = Number(normalized.forceLogoutAt || 0);
-  ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings'].forEach((k) => {
+  ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings','cashStateVersion','cashStateUpdatedAt'].forEach((k) => {
     if (normalized[k] !== undefined) state[k] = normalized[k];
   });
   if (state.currentUser && !validateSessionPolicy({ silent: true })) return;
@@ -1273,6 +1400,15 @@ function persist(options = {}) {
   if (options.sync === false) return;
   if (!cloudHydrated) return;
   scheduleCloudSync(document.hidden ? 1200 : 600);
+}
+
+async function syncCriticalCashState(reason = 'cash-mutation') {
+  if (!cloudHydrated && !isModuleHydrated('operations')) {
+    console.warn('[cash][sync] operación bloqueada hasta hidratar operations', { reason });
+    await pullFromCloud({ force: true, modules: ['operations'], reason: `${reason}-rehydrate` });
+  }
+  await syncToCloud({ modules: ['operations'], reason });
+  await pullFromCloud({ force: true, modules: ['operations'], reason: `${reason}-verify` });
 }
 
 function defaultPermissions() {
@@ -1445,6 +1581,16 @@ function normalizeCashState() {
       state.cashSession = { id: activeCash.id, openedAt: activeCash.fecha_apertura, openingCash: Number(activeCash.openingCash || 0), orderCounter: 1 };
     }
   }
+  state.cashStateVersion = Math.max(Number(state.cashStateVersion || 0), Number(state.cashStateUpdatedAt || 0), Number(state.generalCash?.updatedAt || 0), Date.now());
+  state.cashStateUpdatedAt = Math.max(Number(state.cashStateUpdatedAt || 0), Number(state.cashStateVersion || 0));
+}
+
+function bumpCashStateVersion(reason = 'cash-state') {
+  const ts = Date.now();
+  state.cashStateVersion = Math.max(Number(state.cashStateVersion || 0), ts);
+  state.cashStateUpdatedAt = ts;
+  console.info('[cash][version]', { reason, cashStateVersion: state.cashStateVersion, cashStateUpdatedAt: state.cashStateUpdatedAt });
+  return ts;
 }
 
 function ensureSeedData() {
@@ -4130,15 +4276,23 @@ function stripHeavyDataUrl(value) {
   return '';
 }
 
-function sanitizeCloudPayload(payload) {
+function sanitizeCloudPayload(payload, remotePayload = {}) {
   const out = { ...payload };
   out.settings = { ...(payload.settings || {}) };
   if (out.settings.billing && typeof out.settings.billing === 'object') out.settings.billing = { ...out.settings.billing };
+  const remoteSettings = (remotePayload && typeof remotePayload === 'object') ? (remotePayload.settings || {}) : {};
+  const remoteBilling = (remoteSettings && typeof remoteSettings.billing === 'object') ? remoteSettings.billing : {};
+  if (isMeaningfullyEmpty(out.settings.logoDataUrl) && !isMeaningfullyEmpty(remoteSettings.logoDataUrl)) out.settings.logoDataUrl = remoteSettings.logoDataUrl;
+  if (out.settings.billing && isMeaningfullyEmpty(out.settings.billing.logoDataUrl) && !isMeaningfullyEmpty(remoteBilling.logoDataUrl)) out.settings.billing.logoDataUrl = remoteBilling.logoDataUrl;
   out.products = (payload.products || []).map((p) => ({ ...p, imageDataUrl: stripHeavyDataUrl(p?.imageDataUrl) }));
-  out.categoryImages = Object.fromEntries(Object.entries(payload.categoryImages || {}).map(([k, v]) => [k, stripHeavyDataUrl(v)]));
+  out.categoryImages = Object.fromEntries(Object.entries(payload.categoryImages || {}).map(([k, v]) => {
+    const sanitized = stripHeavyDataUrl(v);
+    if (isMeaningfullyEmpty(sanitized) && !isMeaningfullyEmpty(remotePayload?.categoryImages?.[k])) return [k, remotePayload.categoryImages[k]];
+    return [k, sanitized];
+  }));
   console.info('[cloud][images]', {
-    strippedMainLogo: false,
-    strippedBillingLogo: false
+    strippedMainLogo: Boolean(payload?.settings?.logoDataUrl && !out.settings.logoDataUrl),
+    strippedBillingLogo: Boolean(payload?.settings?.billing?.logoDataUrl && !out.settings?.billing?.logoDataUrl)
   });
   return out;
 }
@@ -4250,6 +4404,33 @@ function mergeCashBoxes(remoteBoxes = [], localBoxes = []) {
   return [...map.values()];
 }
 
+function cashStateVersionOf(source = {}) {
+  const explicit = Number(source?.cashStateVersion || 0);
+  const updated = Number(source?.cashStateUpdatedAt || 0);
+  const general = Number(source?.generalCash?.updatedAt || 0);
+  return Math.max(explicit, updated, updated || general, 0);
+}
+
+function mergeCashOperationsState(remoteModule = {}, localModule = {}) {
+  const remoteVersion = cashStateVersionOf(remoteModule);
+  const localVersion = cashStateVersionOf(localModule);
+  const winner = remoteVersion >= localVersion ? remoteModule : localModule;
+  const loser = winner === remoteModule ? localModule : remoteModule;
+  const mergedCashBoxes = mergeCashBoxes(remoteModule?.cashBoxes, localModule?.cashBoxes);
+  const activeCandidate = String(winner?.activeCashBoxId || '');
+  const activeExists = normalizeCollectionToArray(mergedCashBoxes).some((box) => box?.id === activeCandidate && box?.estado === 'ABIERTA');
+  return {
+    cashBoxes: collectionToObjectById(mergedCashBoxes),
+    activeCashBoxId: activeExists ? activeCandidate : '',
+    systemStatus: activeExists ? 'CAJA_ABIERTA' : 'CAJA_CERRADA',
+    cashSession: winner?.cashSession || loser?.cashSession || null,
+    generalCash: winner?.generalCash || loser?.generalCash || localModule?.generalCash || remoteModule?.generalCash || null,
+    generalClosings: Array.isArray(winner?.generalClosings) ? winner.generalClosings : (Array.isArray(loser?.generalClosings) ? loser.generalClosings : []),
+    cashStateVersion: Math.max(remoteVersion, localVersion, Date.now()),
+    cashStateUpdatedAt: Math.max(Number(winner?.cashStateUpdatedAt || 0), Number(loser?.cashStateUpdatedAt || 0), Date.now())
+  };
+}
+
 async function syncToCloud(options = {}) {
   if (!state.settings.firebaseDbUrl) return;
   await ensureCloudSeedData();
@@ -4287,11 +4468,11 @@ async function syncToCloud(options = {}) {
           const mergedSales = mergeByIdLatest(remoteModule?.sales, localModule?.sales);
           const mergedOutflows = mergeByIdLatest(remoteModule?.outflows, localModule?.outflows);
           const mergedDebt = mergeByIdLatest(remoteModule?.debtPayments, localModule?.debtPayments);
-          const mergedCashBoxes = mergeCashBoxes(remoteModule?.cashBoxes, localModule?.cashBoxes);
+          const mergedCashState = mergeCashOperationsState(remoteModule, localModule);
           payload.sales = collectionToObjectById(mergedSales);
           payload.outflows = collectionToObjectById(mergedOutflows);
           payload.debtPayments = collectionToObjectById(mergedDebt);
-          payload.cashBoxes = collectionToObjectById(mergedCashBoxes);
+          Object.assign(payload, mergedCashState);
         } else if (moduleName === 'warehouse') {
           const mergedComponents = mergeByIdLatest(remoteModule?.components, localModule?.components);
           payload.components = collectionToObjectById(mergedComponents);
@@ -4303,10 +4484,13 @@ async function syncToCloud(options = {}) {
           payload.deletedSales = collectionToObjectById(mergeByIdPreferRemote(remoteModule?.deletedSales, localModule?.deletedSales));
           payload.componentMoves = collectionToObjectById(mergeByIdPreferRemote(remoteModule?.componentMoves, localModule?.componentMoves));
         } else if (moduleName === 'config') {
-          payload = sanitizeCloudPayload(payload);
+          payload = sanitizeCloudPayload(payload, remoteModule);
         }
         payload.updatedAt = Math.max(Number(payload.updatedAt || 0), Number(remoteModule?.updatedAt || 0), Date.now());
+        if (shouldBlockModuleWrite(moduleName, payload, remoteModule)) continue;
         await cloudWritePath(path, payload, { includeToken, method: 'PUT' });
+        recordModuleWrite(moduleName, payload, options.reason || 'sync');
+        markModuleHydrated(moduleName, true, { source: 'local-sync' });
       }
       state.lastSyncAt = Date.now();
       saveLocalState();
@@ -4355,11 +4539,17 @@ async function pullFromCloud(options = {}) {
         for (const moduleName of modules) {
           const path = CLOUD_MODULE_PATHS[moduleName];
           if (!path) continue;
+          const localStamp = getModuleUpdatedAt(moduleName);
           if (!options.force) {
-            const stamp = Number(await cloudReadPath(`${path}/updatedAt`, { includeToken }) || 0);
-            if (stamp && stamp <= Number(state.lastSyncAt || 0)) continue;
+            const stamp = await fetchModuleUpdatedAt(moduleName, { includeToken, reason: options.reason || 'pull' });
+            if (stamp && stamp <= localStamp) {
+              console.info('[cloud][pull-skip]', { moduleName, stamp, localStamp, reason: options.reason || 'pull' });
+              continue;
+            }
           }
           next[moduleName] = await cloudReadPath(path, { includeToken }) || {};
+          recordModuleRead(moduleName, next[moduleName], options.reason || 'pull');
+          markModuleHydrated(moduleName, true, { source: 'cloud-pull' });
           changedAny = true;
         }
         if (!changedAny && !options.force) return;
@@ -4487,8 +4677,11 @@ function switchToPos(tabId = 'ventas') {
   posScreen?.classList.remove('hidden');
   tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === tabId));
   panels.forEach((p) => p.classList.toggle('active', p.id === tabId));
+  if (tabId === 'historial' || tabId === 'eliminadas') {
+    Promise.resolve().then(() => pullFromCloud({ modules: ['history'], force: true, includeHistory: true, reason: `tab-${tabId}` })).catch(() => {});
+  }
   if (tabId === 'cierres') {
-    Promise.resolve().then(() => pullFromCloud({ modules: ['history'], force: true, includeHistory: true })).catch(() => {});
+    Promise.resolve().then(() => pullFromCloud({ modules: ['history'], force: true, includeHistory: true, reason: 'tab-cierres' })).catch(() => {});
     renderCashClosings();
   }
 }
@@ -4499,7 +4692,7 @@ async function handleLogin() {
   if (!username || !password) return setMsg(loginMessage, 'Ingresa usuario y contraseña para continuar.', false);
   let cloudReadyAtLogin = false;
   try {
-    await pullFromCloud({ force: true });
+    await pullFromCloud({ force: true, modules: ['config', 'operations'], reason: 'login' });
     cloudReadyAtLogin = true;
   } catch {}
   ensureUsers();
@@ -4593,6 +4786,14 @@ async function startCashSession(openingAmount = 0) {
     return setMsg(homeMessage, 'Monto inicial inválido.', false);
   }
 
+  if (!isModuleHydrated('operations')) {
+    try {
+      await pullFromCloud({ force: true, modules: ['operations'], reason: 'open-cash-preflight' });
+    } catch {}
+  }
+  if (getActiveCashBox()) {
+    return setMsg(homeMessage, 'Otra caja ya fue abierta desde otro cliente.', false);
+  }
   const nowIso = new Date().toISOString();
   const cashBox = {
     id: uid(),
@@ -4609,10 +4810,21 @@ async function startCashSession(openingAmount = 0) {
   state.activeCashBoxId = cashBox.id;
   state.systemStatus = 'CAJA_ABIERTA';
   state.cashSession = { id: cashBox.id, openedAt: cashBox.fecha_apertura, openingCash: parsedOpening, orderCounter: 1 };
+  state.generalCash = {
+    ...(state.generalCash || {}),
+    efectivo: parsedOpening,
+    qr: 0,
+    estado: 'ABIERTA',
+    openedAt: nowIso,
+    closedAt: '',
+    openedBy: state.currentUser?.username || '-',
+    closedBy: '',
+    updatedAt: bumpCashStateVersion('open-cash')
+  };
 
   closeStartCashModal();
   startCashCard?.classList.add('hidden');
-  persist();
+  persist({ sync: false });
   renderHomeActions();
   renderTabsByPermissions();
   renderCashStatus();
@@ -4622,9 +4834,18 @@ async function startCashSession(openingAmount = 0) {
   renderSalesHistory();
   renderDebtors();
   renderOutflows();
-  console.info('[cash] caja abierta correctamente', { cashBoxId: cashBox.id });
-  setMsg(homeMessage, 'Caja abierta correctamente.');
-  switchToPos('ventas');
+  try {
+    await syncCriticalCashState('open-cash');
+    console.info('[cash] caja abierta correctamente', { cashBoxId: cashBox.id });
+    setMsg(homeMessage, 'Caja abierta correctamente.');
+    switchToPos('ventas');
+  } catch (err) {
+    console.error('[cash] apertura revertida por inconsistencia remota', err);
+    await pullFromCloud({ force: true, modules: ['operations'], reason: 'open-cash-rollback' });
+    renderHomeActions();
+    renderCashStatus();
+    return setMsg(homeMessage, 'No se pudo abrir caja de forma consistente. Intenta nuevamente.', false);
+  }
 }
 
 async function closeCashSession() {
@@ -4635,6 +4856,9 @@ async function closeCashSession() {
   try {
     const activeCash = getActiveCashBox();
     if (!activeCash) return setMsg(homeMessage, 'No hay caja abierta para cerrar.', false);
+    if (!isModuleHydrated('operations')) {
+      await pullFromCloud({ force: true, modules: ['operations'], reason: 'close-cash-preflight' });
+    }
     if (!confirm('¿Estás seguro que deseas cerrar caja?')) return;
 
     const daySales = salesForActiveCashBox().filter((sale) => !sale.carryOverDebt);
@@ -4685,7 +4909,14 @@ async function closeCashSession() {
     state.systemStatus = 'CAJA_CERRADA';
     state.cashSession = null;
     state.forceLogoutAt = Date.now();
-    persist();
+    state.generalCash = {
+      ...(state.generalCash || {}),
+      estado: 'CERRADA',
+      closedAt: activeCash.fecha_cierre,
+      closedBy: state.currentUser?.username || '-',
+      updatedAt: bumpCashStateVersion('close-cash')
+    };
+    persist({ sync: false });
 
     renderHomeActions();
     renderTabsByPermissions();
@@ -4697,10 +4928,11 @@ async function closeCashSession() {
     }
     switchToPos('ventas');
     showHome();
-    Promise.resolve(syncToCloud()).catch((err) => console.error('[cash] sync close failed', err));
+    await syncCriticalCashState('close-cash');
     setMsg(homeMessage, 'La caja ha sido cerrada.', false);
   } catch (err) {
     console.error('[cash] closeCashSession error', err);
+    try { await pullFromCloud({ force: true, modules: ['operations'], reason: 'close-cash-recover' }); } catch {}
     setMsg(homeMessage, 'No se pudo cerrar caja. Intenta nuevamente.', false);
   }
 }
@@ -6132,16 +6364,7 @@ function wireEvents() {
 async function bootstrap() {
   console.info('[boot][start]', { at: new Date().toISOString() });
   normalizeCloudSettings();
-  let cloudBootHydrated = false;
-  try {
-    await ensureCloudSeedData({ force: true });
-    await pullFromCloud({ force: true });
-    cloudBootHydrated = true;
-    bootCloudReady = true;
-    console.info('[boot][cloud-ready]', { cloudBootHydrated, lastSyncAt: state.lastSyncAt || 0 });
-  } catch (err) {
-    console.error('[bootstrap] No se pudo hidratar desde cloud al inicio. Se usará respaldo local temporal.', { message: err?.message });
-  }
+  ['config', 'operations'].forEach((moduleName) => markModuleHydrated(moduleName, false, { source: 'bootstrap-reset' }));
   ensureUsers();
   ensureSeedData();
   ensureProductStockDefaults();
@@ -6191,19 +6414,46 @@ async function bootstrap() {
   renderWarehouse();
   renderSummary();
   renderSoldProductsList();
+  let cloudBootHydrated = false;
   const validSession = Boolean(state.currentUser && currentUserRecord());
-  window.addEventListener('storage', (e) => { if (!e.key || !e.key.startsWith('cafeteria_')) return; pullFromCloud({ force: true, modules: ['operations', 'catalog'] }); });
+  window.addEventListener('storage', (e) => {
+    if (!e.key || !e.key.startsWith('cafeteria_') || document.hidden) return;
+    pullFromCloud({ modules: ['operations'], reason: 'storage' });
+  });
   window.addEventListener('hashchange', () => { if (applyingRoute) return; applyRoute(); });
-  setInterval(() => { if (document.hidden || firebaseRealtimeListener) return; pullFromCloud({ modules: ['operations', 'catalog'] }); }, Math.max(CLOUD_POLL_INTERVAL_MS, 20000));
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) pullFromCloud({ force: true, modules: ['operations', 'catalog'] }); });
-  window.addEventListener('online', () => { pullFromCloud({ force: true, modules: ['operations', 'catalog'] }); startFirebaseRealtimeListener(); });
+  setInterval(() => {
+    if (document.hidden || firebaseRealtimeListener) return;
+    pullFromCloud({ modules: ['operations'], reason: 'polling' });
+  }, Math.max(CLOUD_POLL_INTERVAL_MS * 3, 25000));
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pullFromCloud({ modules: ['operations'], reason: 'visibilitychange' });
+  });
+  window.addEventListener('online', () => {
+    pullFromCloud({ modules: ['operations', 'config'], reason: 'online' });
+    startFirebaseRealtimeListener();
+  });
   Promise.resolve().then(() => migrateCategoryImageRefsToDataUrls()).catch(() => {});
-  if (!cloudBootHydrated) {
-    if (state.currentUser && validSession) {
-      try { await pullFromCloud({ force: true, modules: ['config', 'catalog', 'operations', 'warehouse'] }); } catch {}
-    } else {
-      Promise.resolve().then(() => pullFromCloud({ force: true, modules: ['config', 'catalog', 'operations', 'warehouse'] })).catch(() => {});
+  try {
+    await ensureCloudSeedData({ force: true });
+    await pullFromCloud({ force: true, modules: MODULE_DEFAULT_BOOT_ORDER, reason: 'bootstrap-critical' });
+    cloudBootHydrated = MODULE_DEFAULT_BOOT_ORDER.every((moduleName) => isModuleHydrated(moduleName));
+    bootCloudReady = cloudBootHydrated;
+    console.info('[boot][cloud-ready]', { cloudBootHydrated, lastSyncAt: state.lastSyncAt || 0, bootModules: MODULE_DEFAULT_BOOT_ORDER });
+  } catch (err) {
+    console.error('[bootstrap] No se pudo hidratar módulos críticos al inicio. Se mantiene caché local.', { message: err?.message });
+  }
+  Promise.resolve().then(async () => {
+    try {
+      await pullFromCloud({ modules: MODULE_BACKGROUND_BOOT_ORDER, reason: 'bootstrap-background' });
+      console.info('[boot][background-ready]', { modules: MODULE_BACKGROUND_BOOT_ORDER });
+    } catch (err) {
+      console.warn('[boot][background-warning]', { message: err?.message });
     }
+  });
+  if (!cloudBootHydrated && state.currentUser && validSession) {
+    try {
+      await pullFromCloud({ force: true, modules: ['operations'], reason: 'bootstrap-retry' });
+    } catch {}
   }
   cloudHydrated = cloudHydrated || cloudBootHydrated;
   console.info('[boot][sales-ready]', { salesCount: state.sales?.length || 0, cloudHydrated });
