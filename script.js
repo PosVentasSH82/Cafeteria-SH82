@@ -273,6 +273,8 @@ const soldProductsTable = $('soldProductsTable');
 const cashTotalBox = $('cashTotalBox');
 const qrTotalBox = $('qrTotalBox');
 const closingsMonthFilter = $('closingsMonthFilter');
+const searchClosingsBtn = $('searchClosingsBtn');
+const clearClosingsBtn = $('clearClosingsBtn');
 const cashClosingsTable = $('cashClosingsTable');
 const salesFromDate = $('salesFromDate');
 const salesToDate = $('salesToDate');
@@ -354,6 +356,8 @@ state.generatedClosingsStats = null;
 state.components = JSON.parse(localStorage.getItem('cafeteria_components') || '[]');
 state.componentLinks = JSON.parse(localStorage.getItem('cafeteria_component_links') || '{}');
 state.componentMoves = JSON.parse(localStorage.getItem('cafeteria_component_moves') || '[]');
+state.cashClosingsLoaded = false;
+state.cashClosingsSearchMonth = '';
 
 let appConfig = {
   stockActivo: Boolean(state.stockConfig?.enabled),
@@ -2596,6 +2600,63 @@ function activeClosingsList() {
   return (state.cashClosings || []).slice().sort((a,b)=>new Date(b.closedAt)-new Date(a.closedAt));
 }
 
+function resetCashClosingsSearch({ render = true } = {}) {
+  state.cashClosings = [];
+  state.cashClosingsLoaded = false;
+  state.cashClosingsSearchMonth = '';
+  if (cashClosingsTable) cashClosingsTable.innerHTML = '<tr><td colspan="14">Selecciona un mes y presiona Buscar.</td></tr>';
+  if (render) renderCashClosings();
+}
+
+async function saveCashClosingToCloud(closing) {
+  if (!closing?.id || !state.settings?.firebaseDbUrl) return;
+  await ensureCloudSeedData();
+  const token = normalizedFirebaseToken();
+  const authModes = token ? [true, false] : [false];
+  const stamp = Date.now();
+  for (const includeToken of authModes) {
+    try {
+      await cloudWritePath(`history/cashClosings/${encodeURIComponent(String(closing.id))}`, closing, { includeToken, method: 'PUT' });
+      await cloudWritePath('history/updatedAt', stamp, { includeToken, method: 'PUT' });
+      return;
+    } catch (err) {
+      if (includeToken && [401, 403].includes(Number(err?.status || 0))) continue;
+      throw err;
+    }
+  }
+}
+
+async function searchCashClosingsByMonth(month) {
+  if (!month || !state.settings?.firebaseDbUrl) {
+    state.cashClosings = [];
+    state.cashClosingsLoaded = true;
+    state.cashClosingsSearchMonth = month || '';
+    renderCashClosings();
+    return [];
+  }
+  await ensureCloudSeedData();
+  const token = normalizedFirebaseToken();
+  const authModes = token ? [true, false] : [false];
+  let rawClosings = {};
+  for (const includeToken of authModes) {
+    try {
+      rawClosings = await cloudReadPath('history/cashClosings', { includeToken }) || {};
+      break;
+    } catch (err) {
+      if (includeToken && [401, 403].includes(Number(err?.status || 0))) continue;
+      throw err;
+    }
+  }
+  const list = normalizeCollectionToArray(rawClosings)
+    .filter((closing) => String(closing?.closedAt || '').slice(0, 7) === month)
+    .sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0));
+  state.cashClosings = list;
+  state.cashClosingsLoaded = true;
+  state.cashClosingsSearchMonth = month;
+  renderCashClosings();
+  return list;
+}
+
 function openSelectClosingsModal() {
   document.getElementById('selectClosingsOverlay')?.remove();
   const list = activeClosingsList();
@@ -2776,8 +2837,11 @@ async function downloadClosingsStatsPdf() {
 function renderCashClosings() {
   if (!cashClosingsTable) return;
   ensureClosingsStatsUI();
-  const month = closingsMonthFilter?.value || '';
-  const list = month ? state.cashClosings.filter((c) => c.closedAt?.slice(0, 7) === month) : state.cashClosings;
+  if (!state.cashClosingsLoaded) {
+    cashClosingsTable.innerHTML = '<tr><td colspan="14">Selecciona un mes y presiona Buscar.</td></tr>';
+    return;
+  }
+  const list = state.cashClosings || [];
   cashClosingsTable.innerHTML = '';
   if (!list.length) {
     cashClosingsTable.innerHTML = '<tr><td colspan="14">No hay cierres para el filtro seleccionado.</td></tr>';
@@ -4761,7 +4825,6 @@ function switchToPos(tabId = 'ventas') {
     Promise.resolve().then(() => pullFromCloud({ modules: ['history'], force: true, includeHistory: true, reason: `tab-${tabId}` })).catch(() => {});
   }
   if (tabId === 'cierres') {
-    Promise.resolve().then(() => pullFromCloud({ modules: ['history'], force: true, includeHistory: true, reason: 'tab-cierres' })).catch(() => {});
     renderCashClosings();
   }
 }
@@ -4999,6 +5062,7 @@ async function closeCashSession() {
     showHome();
     setMsg(homeMessage, 'La caja ha sido cerrada.', false);
     Promise.resolve(syncCashStateToCloud('close-cash')).catch((err) => console.error('[cash] close sync failed', err));
+    Promise.resolve(saveCashClosingToCloud(closing)).catch((err) => console.error('[cash][closing] save failed', err));
   } catch (err) {
     console.error('[cash] closeCashSession error', err);
     setMsg(homeMessage, 'No se pudo cerrar caja.', false);
@@ -6107,7 +6171,20 @@ function wireEvents() {
   });
   createSaleBtn?.addEventListener('click', registerSale);
   saleSuccessContinueBtn?.addEventListener('click', hideSaleSuccessModal);
-  closingsMonthFilter?.addEventListener('change', renderCashClosings);
+  searchClosingsBtn?.addEventListener('click', () => {
+    const month = String(closingsMonthFilter?.value || '').trim();
+    searchCashClosingsByMonth(month).catch((err) => {
+      console.error('[cash][closings] search failed', err);
+      state.cashClosings = [];
+      state.cashClosingsLoaded = true;
+      state.cashClosingsSearchMonth = month;
+      renderCashClosings();
+    });
+  });
+  clearClosingsBtn?.addEventListener('click', () => {
+    if (closingsMonthFilter) closingsMonthFilter.value = '';
+    resetCashClosingsSearch({ render: false });
+  });
   tabs.forEach((tab) => tab.addEventListener('click', () => {
     const map = {
       ventas: 'pos/ventas',
