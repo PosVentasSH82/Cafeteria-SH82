@@ -10,6 +10,7 @@ const state = {
   categories: JSON.parse(localStorage.getItem('cafeteria_categories') || '[]'),
   people: JSON.parse(localStorage.getItem('cafeteria_people') || '[]'),
   stockConfig: JSON.parse(localStorage.getItem('cafeteria_stock_config') || '{"enabled":false,"min":0}'),
+  stockWriteOffs: JSON.parse(localStorage.getItem('cafeteria_stock_writeoffs') || '[]'),
   queuedOrders: JSON.parse(localStorage.getItem('cafeteria_queued_orders') || '[]'),
   removedPeopleIds: JSON.parse(localStorage.getItem('cafeteria_removed_people_ids') || '[]'),
   userSalesModes: JSON.parse(localStorage.getItem('cafeteria_user_sales_modes') || '{}'),
@@ -225,6 +226,7 @@ const backFromStockBtn = $('backFromStockBtn');
 const productForm = $('productForm');
 const productCategory = $('productCategory');
 const productName = $('productName');
+const productCost = $('productCost');
 const productPrice = $('productPrice');
 const productsTable = $('productsTable');
 const productListCard = $('productListCard');
@@ -633,6 +635,7 @@ function cloudSeedTemplate() {
     subcategories: {},
     people: [],
     stockConfig: { enabled: false, min: 0 },
+    stockWriteOffs: [],
     outflows: [],
     debtPayments: [],
     components: [],
@@ -693,6 +696,7 @@ function cloudModulePayloadFromState() {
       sales: collectionToObjectById(state.sales || []),
       outflows: collectionToObjectById(state.outflows || []),
       debtPayments: collectionToObjectById(state.debtPayments || []),
+      stockWriteOffs: collectionToObjectById(state.stockWriteOffs || []),
       orderCounters: state.orderCounters || {},
       cashBoxes: collectionToObjectById(state.cashBoxes || []),
       activeCashBoxId: state.activeCashBoxId || '',
@@ -743,6 +747,7 @@ function normalizeCloudModules(raw = {}) {
   flat.sales = normalizeCollectionToArray(operations.sales);
   flat.outflows = normalizeCollectionToArray(operations.outflows);
   flat.debtPayments = normalizeCollectionToArray(operations.debtPayments);
+  flat.stockWriteOffs = normalizeCollectionToArray(operations.stockWriteOffs);
   flat.orderCounters = (operations.orderCounters && typeof operations.orderCounters === 'object' && !Array.isArray(operations.orderCounters)) ? operations.orderCounters : {};
   flat.cashBoxes = normalizeCollectionToArray(operations.cashBoxes);
   flat.activeCashBoxId = String(operations.activeCashBoxId || '');
@@ -788,6 +793,7 @@ function normalizeCloudSeedObject(raw) {
   if (!merged.stockConfig || typeof merged.stockConfig !== 'object') merged.stockConfig = { enabled: false, min: 0 };
   if (!Array.isArray(merged.outflows)) merged.outflows = [];
   if (!Array.isArray(merged.debtPayments)) merged.debtPayments = [];
+  if (!Array.isArray(merged.stockWriteOffs)) merged.stockWriteOffs = [];
   if (!Array.isArray(merged.components)) merged.components = [];
   if (!merged.componentLinks || typeof merged.componentLinks !== 'object' || Array.isArray(merged.componentLinks)) merged.componentLinks = {};
   if (!Array.isArray(merged.componentMoves)) merged.componentMoves = [];
@@ -856,6 +862,7 @@ async function ensureCloudSeedData(options = {}) {
           sales: collectionToObjectById(legacyNormalized.sales),
           outflows: collectionToObjectById(legacyNormalized.outflows),
           debtPayments: collectionToObjectById(legacyNormalized.debtPayments),
+          stockWriteOffs: collectionToObjectById(legacyNormalized.stockWriteOffs),
           orderCounters: legacyNormalized.orderCounters || {},
           cashBoxes: collectionToObjectById(legacyNormalized.cashBoxes),
           activeCashBoxId: legacyNormalized.activeCashBoxId || '',
@@ -990,6 +997,7 @@ function saveLocalState() {
   safeLocalSet('cafeteria_categories', JSON.stringify(state.categories));
   safeLocalSet('cafeteria_people', JSON.stringify(state.people));
   safeLocalSet('cafeteria_stock_config', JSON.stringify(state.stockConfig));
+  safeLocalSet('cafeteria_stock_writeoffs', JSON.stringify(state.stockWriteOffs || []));
   safeLocalSet('cafeteria_outflows', JSON.stringify(state.outflows));
   safeLocalSet('cafeteria_debt_payments', JSON.stringify(state.debtPayments));
   safeLocalSet('cafeteria_components', JSON.stringify(state.components || []));
@@ -1275,6 +1283,29 @@ async function commitSaleToFirebaseTransaction(sale) {
   throw lastError || new Error('sale transaction failed');
 }
 
+async function commitCriticalCloudWrites(writeFn, context = {}) {
+  await ensureCloudSeedData();
+  const token = normalizedFirebaseToken();
+  const authModes = token ? [true, false] : [false];
+  let lastError = null;
+  for (const includeToken of authModes) {
+    const modeLabel = includeToken ? 'token' : 'sin-token';
+    try {
+      await writeFn(includeToken);
+      state.lastSyncAt = Date.now();
+      saveLocalState();
+      return;
+    } catch (err) {
+      lastError = err;
+      const status = Number(err?.status || 0);
+      if (includeToken && (status === 401 || status === 403)) continue;
+      console.error('[cloud][commit-critical] error', { modeLabel, status, message: err?.message, context });
+      break;
+    }
+  }
+  throw lastError || new Error('critical cloud commit failed');
+}
+
 function applyCloudData(data) {
   const normalized = normalizeCloudModules(data);
   console.info('[users][apply]', { usersCount: Array.isArray(normalized.users) ? normalized.users.length : -1 });
@@ -1284,7 +1315,7 @@ function applyCloudData(data) {
   console.info('[debt][apply]', { debtPaymentsCount: Array.isArray(normalized.debtPayments) ? normalized.debtPayments.length : -1 });
   state.lastSyncAt = Number(normalized.updatedAt || Date.now());
   state.forceLogoutAt = Number(normalized.forceLogoutAt || 0);
-  ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings','cashStateVersion','cashStateUpdatedAt'].forEach((k) => {
+  ['products','sales','deletedSales','cashClosings','cashSession','users','settings','categories','subcategories','people','stockConfig','outflows','debtPayments','stockWriteOffs','components','componentLinks','componentMoves','cashBoxes','activeCashBoxId','systemStatus','userSalesModes','touchUiConfigByUser','categoryImages','orderCounters','deletedRecordIds','generalCash','generalClosings','cashStateVersion','cashStateUpdatedAt'].forEach((k) => {
     if (normalized[k] !== undefined) state[k] = normalized[k];
   });
   if (state.currentUser && !validateSessionPolicy({ silent: true })) return;
@@ -1725,15 +1756,16 @@ function ensureSeedData() {
   if (!state.categories.includes('Todos')) state.categories.unshift('Todos');
   if (!Array.isArray(state.products) || !state.products.length) {
     state.products = [
-      { id: uid(), category: 'Bebidas', name: 'Mocochinchi', price: 5, hidden: false },
-      { id: uid(), category: 'Comidas', name: 'Sandwich', price: 12, hidden: false }
+      { id: uid(), category: 'Bebidas', name: 'Mocochinchi', cost: 0, price: 5, hidden: false },
+      { id: uid(), category: 'Comidas', name: 'Sandwich', cost: 0, price: 12, hidden: false }
     ];
   }
 }
 
 
 function ensureProductStockDefaults() {
-  state.products = (state.products || []).map((p) => ({ ...p, stockCurrent: Number(p.stockCurrent || 0) }));
+  state.products = (state.products || []).map((p) => ({ ...p, stockCurrent: Number(p.stockCurrent || 0), cost: Math.max(0, Number(p.cost || 0)) }));
+  state.stockWriteOffs = Array.isArray(state.stockWriteOffs) ? state.stockWriteOffs : [];
 }
 
 
@@ -1872,7 +1904,7 @@ function renderSaleSelectors() {
       e.qty += q;
       const total = Number(e.price || 0) * Number(e.qty || 0);
       e.finalSubtotal = total - (total * Number(e.discountPct || 0) / 100);
-    } else state.currentCart.push({ id: p.id, name: p.name, price: Number(p.price || 0), qty: q, discountPct: 0, finalSubtotal: Number(p.price || 0) * q });
+    } else state.currentCart.push({ id: p.id, name: p.name, cost: Number(p.cost || 0), price: Number(p.price || 0), qty: q, discountPct: 0, finalSubtotal: Number(p.price || 0) * q });
     activeSaleCategory = '';
     renderSaleSelectors();
     renderCart();
@@ -1997,7 +2029,7 @@ function renderTouchSaleUi() {
     if (!p) return;
     if (isStockEnabled() && Number(p.stockCurrent || 0) <= 0) return alert('Producto sin stock disponible.');
     const e = state.currentCart.find((i) => i.id === p.id);
-    if (e) e.qty += 1; else state.currentCart.push({ id: p.id, name: p.name, price: Number(p.price || 0), qty: 1, discountPct: 0, finalSubtotal: Number(p.price || 0) });
+    if (e) e.qty += 1; else state.currentCart.push({ id: p.id, name: p.name, cost: Number(p.cost || 0), price: Number(p.price || 0), qty: 1, discountPct: 0, finalSubtotal: Number(p.price || 0) });
     const item = state.currentCart.find((i) => i.id === p.id);
     const total = item.price * item.qty;
     item.finalSubtotal = total - (total * (item.discountPct || 0) / 100);
@@ -2461,6 +2493,8 @@ function getClosingAggregates(closing) {
   const sales = Array.isArray(closing?.salesSnapshot) ? closing.salesSnapshot : [];
   const productsMap = new Map();
   let qtyTotal = 0;
+  let totalCost = 0;
+  let totalRevenue = 0;
   let saleMax = 0;
   let saleMin = sales.length ? Number(sales[0].total || 0) : 0;
   sales.forEach((sale) => {
@@ -2469,14 +2503,21 @@ function getClosingAggregates(closing) {
     saleMin = Math.min(saleMin, total);
     (sale.items || []).forEach((it) => {
       const name = it.name || 'Producto';
-      if (!productsMap.has(name)) productsMap.set(name, { qty: 0, total: 0 });
+      if (!productsMap.has(name)) productsMap.set(name, { qty: 0, total: 0, cost: 0 });
       const row = productsMap.get(name);
+      const qty = Number(it.qty || 0);
+      const lineTotal = Number((it.finalSubtotal ?? (it.price * it.qty)) || 0);
+      const unitCost = Math.max(0, Number((it.cost ?? state.products.find((p) => p.id === it.id)?.cost ?? 0)));
+      const lineCost = unitCost * qty;
       row.qty += Number(it.qty || 0);
-      row.total += Number((it.finalSubtotal ?? (it.price * it.qty)) || 0);
-      qtyTotal += Number(it.qty || 0);
+      row.total += lineTotal;
+      row.cost += lineCost;
+      qtyTotal += qty;
+      totalRevenue += lineTotal;
+      totalCost += lineCost;
     });
   });
-  const products = [...productsMap.entries()].map(([name, row]) => ({ name, ...row })).sort((a,b)=>b.qty-a.qty);
+  const products = [...productsMap.entries()].map(([name, row]) => ({ name, ...row, profit: row.total - row.cost })).sort((a,b)=>b.qty-a.qty);
   const topByQty = products[0] || null;
   const topByAmount = products.slice().sort((a,b)=>b.total-a.total)[0] || null;
   const net = Number(closing.cashIn || 0) + Number(closing.qrIn || 0);
@@ -2507,7 +2548,10 @@ function getClosingAggregates(closing) {
     cash: Number(closing.cashIn || 0),
     qr: Number(closing.qrIn || 0),
     transfer: Number(closing.transferIn || 0),
-    others: Math.max(0, net - Number(closing.cashIn || 0) - Number(closing.qrIn || 0) - Number(closing.transferIn || 0))
+    others: Math.max(0, net - Number(closing.cashIn || 0) - Number(closing.qrIn || 0) - Number(closing.transferIn || 0)),
+    totalCost,
+    totalRevenue,
+    totalProfit: totalRevenue - totalCost
   };
 }
 
@@ -2582,7 +2626,8 @@ async function downloadClosingPdf(closingId) {
     ];
     doc.autoTable({ startY: oy, head: [['Métricas operativas', 'Valor']], body: ops, theme: 'grid' });
     doc.addPage();
-    doc.autoTable({ startY: 12, head: [['Producto', 'Cantidad', 'Total generado']], body: agg.products.map((p)=>[p.name, String(p.qty), money(p.total)]), theme: 'grid' });
+    doc.autoTable({ startY: 12, head: [['Producto', 'Cantidad', 'Costo', 'Ganancia', 'Total']], body: agg.products.map((p)=>[p.name, String(p.qty), money(p.cost || 0), money(p.profit || 0), money(p.total)]), theme: 'grid' });
+    doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, head: [['Totales', 'Valor']], body: [['Costo total', money(agg.totalCost || 0)], ['Ganancia total', money(agg.totalProfit || 0)], ['Entrada total', money(agg.totalRevenue || 0)]], theme: 'grid' });
     const py = doc.lastAutoTable.finalY + 4;
     const totalNet = Math.max(1, agg.net);
     const mpay = [
@@ -2637,7 +2682,9 @@ async function downloadClosingPdf(closingId) {
       sale.statusLabel || sale.status || 'OK'
     ]);
     doc.addPage();
-    doc.autoTable({ startY: 12, head: [['PAGOS DE DEUDA', '', '', '', '', '']], body: debtPaymentRows.length ? debtPaymentRows : [['Sin pagos de deuda.', '', '', '', '', '']], theme: 'grid' });
+    const writeOffRows = (closing.stockWriteOffsSnapshot || []).map((row) => [row.productName || '-', String(Number(row.qty || 0)), row.reason || '-', row.user || '-', new Date(row.createdAt || closing.closedAt).toLocaleString()]);
+    doc.autoTable({ startY: 12, head: [['PRODUCTOS DADOS DE BAJA', '', '', '', '']], body: writeOffRows.length ? writeOffRows : [['Sin productos dados de baja.', '', '', '', '']], theme: 'grid' });
+    doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['PAGOS DE DEUDA', '', '', '', '', '']], body: debtPaymentRows.length ? debtPaymentRows : [['Sin pagos de deuda.', '', '', '', '', '']], theme: 'grid' });
     doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['HISTORIAL DE VENTAS DE CIERRE', '', '', '', '', '']], body: historyRows.length ? historyRows : [['Sin historial de ventas.', '', '', '', '', '']], theme: 'grid', didParseCell: (hook) => {
       if (hook.section !== 'body') return;
       const cellText = String(hook.row?.raw?.[5] || '');
@@ -2971,10 +3018,14 @@ function renderClosingDetails(closingId) {
     ? closingHistory.map((sale) => `<tr style="${sale.status === 'ANULADA' ? 'color:#c1121f;font-weight:700;' : ''}"><td>${new Date(sale.createdAt || sale.deletedAt).toLocaleString()}</td><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${sale.payment || '-'}</td><td>${money(sale.total)}</td><td>${sale.user || '-'}</td><td>${sale.statusLabel || sale.status}</td></tr>`).join('')
     : '<tr><td colspan="6">Sin historial de ventas.</td></tr>';
   if (closingSummaryText) closingSummaryText.innerHTML = `<div class="card"><h4>SECCIÓN 1 – INFORMACIÓN GENERAL</h4><p>Número de cierre: ${String(closing.id || '-').slice(-8)}</p><p>Fecha de apertura: ${openAt.toLocaleDateString()}</p><p>Hora de apertura: ${openAt.toLocaleTimeString()}</p><p>Fecha de cierre: ${closeAt.toLocaleDateString()}</p><p>Hora de cierre: ${closeAt.toLocaleTimeString()}</p><p>Usuario que abrió: ${closing.usuario_apertura || '-'}</p><p>Usuario que cerró: ${closing.usuario_cierre || '-'}</p><p>Tiempo total de caja abierta: ${formatDurationMs(closeAt - openAt)}</p></div><div class="card"><h4>Detalle para enviar</h4><p>Cambio inicial: ${money(openingCash)}</p><p>Valor efectivo de ventas: ${money(totalCash)}</p><p>Valor QR de ventas: ${money(totalQr)}</p><p>Salida efectivo: ${money(outCash)}</p><p>Entrada efectivo: ${money(inCash)}</p><p>Salida QR: ${money(outQr)}</p><p>Entrada QR: ${money(inQr)}</p><p>Valor final en caja: ${money(totalInBox)}</p><p>Valor final descontando cambio inicial: ${money(realDelivered)}</p></div><div class="card"><h4>SECCIÓN 2 – RESUMEN FINANCIERO</h4><p>Inicio de caja: ${money(openingCash)}</p><p>Total ventas brutas: ${money(grossSales)}</p><p>Pagos de deuda cobrados: ${money(debtCollected)}</p><p>Total descuentos: ${money(totalDiscounts)}</p><p>Total ingresos netos: ${money((grossSales - totalDiscounts) + debtCollected)}</p><p>Total en efectivo: ${money(totalCash)}</p><p>Total QR: ${money(totalQr)}</p><p>Total salidas externas efectivo: ${money(outCash)}</p><p>Total salidas externas QR: ${money(outQr)}</p><p>Total entradas externas efectivo: ${money(inCash)}</p><p>Total entradas externas QR: ${money(inQr)}</p><p>Total efectivo final: ${money(totalCashFinal)}</p><p>Total QR final: ${money(totalQrFinal)}</p><p>Valor total en caja (incluye valor de caja): ${money(totalInBox)}</p><p>Valor efectivo real de venta entregado: ${money(realDelivered)}</p></div><div class="card"><h4>Productos vendidos</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${agg.products.length ? agg.products.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="3">Sin productos vendidos.</td></tr>'}</tbody></table></div><div class="card"><h4>HISTORIAL DE VENTAS DE CIERRE</h4><table><thead><tr><th>Fecha</th><th>Nro pedido</th><th>Método</th><th>Total</th><th>Usuario</th><th>Estado</th></tr></thead><tbody>${closingHistoryRows}</tbody></table></div><div class="card"><h4>SECCIÓN 3 – MÉTRICAS OPERATIVAS</h4><p>Cantidad total de ventas: ${closing.salesCount || sales.length}</p><p>Total productos vendidos: ${agg.qtyTotal}</p><p>Ticket promedio: ${money(agg.avgTicket)}</p><p>Venta más alta: ${money(agg.saleMax)}</p><p>Venta más baja: ${money(agg.saleMin)}</p><p>Ventas eliminadas: ${deletedCount} · Mov. caja: ${outflowCount} · Pagos deuda: ${debtPaymentsCount}</p></div><div class="card"><h4>Pagos de deuda</h4><table><thead><tr><th>Fecha pago</th><th>Persona</th><th>Detalle compra</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${debtPayments.map((p) => { const sale = saleRecordForPayment(p); const person = state.people.find((x) => x.id === p.debtorId); return `<tr><td>${new Date(p.paidAt).toLocaleString()}</td><td>${personFullName(person) || '-'}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${p.method || '-'}</td><td>${money(p.amount || 0)}</td><td>${p.paidBy || '-'}</td></tr>`; }).join('') || '<tr><td colspan="6">Sin pagos de deuda.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de entradas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${entries.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin entradas.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de salidas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${exits.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin salidas.</td></tr>'}</tbody></table></div>`;
+  const closingWriteOffs = Array.isArray(closing.stockWriteOffsSnapshot) ? closing.stockWriteOffsSnapshot : [];
+  if (closingSummaryText) {
+    closingSummaryText.insertAdjacentHTML('beforeend', `<div class="card"><h4>Productos vendidos (costos y ganancias)</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Costo</th><th>Ganancia</th><th>Total</th></tr></thead><tbody>${agg.products.length ? agg.products.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.cost || 0)}</td><td>${money(row.profit || 0)}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos vendidos.</td></tr>'}</tbody><tfoot><tr><th colspan="2">Totales</th><th>${money(agg.totalCost || 0)}</th><th>${money(agg.totalProfit || 0)}</th><th>${money(agg.totalRevenue || 0)}</th></tr></tfoot></table></div><div class="card"><h4>Productos dados de baja</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Motivo</th><th>Usuario</th><th>Fecha</th></tr></thead><tbody>${closingWriteOffs.length ? closingWriteOffs.map((row) => `<tr><td>${escapeHtml(row.productName || '-')}</td><td>${Number(row.qty || 0)}</td><td>${escapeHtml(row.reason || '-')}</td><td>${escapeHtml(row.user || '-')}</td><td>${new Date(row.createdAt || closing.closedAt).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos dados de baja.</td></tr>'}</tbody></table></div>`);
+  }
   if (closingSalesTable) closingSalesTable.innerHTML = sales.length ? sales.map((sale) => `<tr><td>${new Date(sale.createdAt).toLocaleString()}</td><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${sale.payment}</td><td>${money(sale.total)}</td><td>${sale.user}</td></tr>`).join('') : '<tr><td colspan="5">Sin ventas.</td></tr>';
   if (closingProductsTable) {
     const aggProducts = agg.products;
-    closingProductsTable.innerHTML = aggProducts.length ? aggProducts.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="3">Sin productos vendidos.</td></tr>';
+    closingProductsTable.innerHTML = aggProducts.length ? aggProducts.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.cost || 0)}</td><td>${money(row.profit || 0)}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos vendidos.</td></tr>';
   }
   if (closingUsersTable) {
     const usersMap = new Map();
@@ -3560,8 +3611,8 @@ function renderWarehouse() {
 
 function exportProductsToExcel() {
   if (!window.XLSX) return alert('No se pudo cargar la librería XLSX.');
-  const rows = (state.products || []).map((p) => ({ PRODUCTO: String(p.name || '').trim(), CATEGORIA: String(p.category || 'Todos').trim(), PRECIO: Number(p.price || 0) }));
-  const ws = XLSX.utils.json_to_sheet(rows, { header: ['PRODUCTO', 'CATEGORIA', 'PRECIO'] });
+  const rows = (state.products || []).map((p) => ({ PRODUCTO: String(p.name || '').trim(), CATEGORIA: String(p.category || 'Todos').trim(), COSTO: Number(p.cost || 0), PRECIO: Number(p.price || 0) }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: ['PRODUCTO', 'CATEGORIA', 'COSTO', 'PRECIO'] });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'PRODUCTOS');
   XLSX.writeFile(wb, 'productos_pos.xlsx');
@@ -3579,7 +3630,8 @@ function importProductsFromExcelFile(file) {
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
       const headers = Object.keys(rows[0] || {});
       const expected = ['PRODUCTO', 'CATEGORIA', 'PRECIO'];
-      const validHeaders = headers.length === expected.length && expected.every((h) => headers.includes(h));
+      const hasRequired = expected.every((h) => headers.includes(h));
+      const validHeaders = rows.length && hasRequired;
       if (!rows.length || !validHeaders) {
         alert('Formato inválido. Debe contener exactamente: PRODUCTO | CATEGORIA | PRECIO');
         return;
@@ -3591,18 +3643,20 @@ function importProductsFromExcelFile(file) {
       rows.forEach((row, idx) => {
         const productName = String(row.PRODUCTO || '').trim();
         const category = String(row.CATEGORIA || 'Todos').trim() || 'Todos';
+        const cost = Math.max(0, Number(row.COSTO || 0));
         const price = Number(row.PRECIO);
         if (!productName) { errors.push(`Fila ${idx + 2}: PRODUCTO vacío`); return; }
         if (Number.isNaN(price)) { errors.push(`Fila ${idx + 2}: PRECIO inválido`); return; }
         const key = normalizeProductName(productName);
         const found = existingMap.get(key);
         if (!found) {
-          state.products.push({ id: uid(), name: productName, category, price, hidden: false });
+          state.products.push({ id: uid(), name: productName, category, cost, price, hidden: false });
           existingMap.set(key, state.products[state.products.length - 1]);
           created += 1;
         } else {
           found.name = productName;
           found.category = category;
+          found.cost = cost;
           found.price = price;
           updated += 1;
         }
@@ -3771,7 +3825,7 @@ function renderProducts() {
   const selectedCategory = productCategory?.value || '';
   const orderedCategories = getOrderedCategories({ includeHidden: true });
   const productsHead = productsTable?.closest('table')?.querySelector('thead tr');
-  if (productsHead) productsHead.innerHTML = '<th>Categoría</th><th>Producto</th><th>Precio</th><th>Acciones</th><th>Imagen</th>';
+  if (productsHead) productsHead.innerHTML = '<th>Categoría</th><th>Producto</th><th>Costo</th><th>Precio</th><th>Acciones</th><th>Imagen</th>';
   const categoriesHead = categoriesTable?.closest('table')?.querySelector('thead tr');
   if (categoriesHead) categoriesHead.innerHTML = '<th>Categoría</th><th>Acciones</th><th>Imagen</th>';
   if (productsTable) {
@@ -3779,7 +3833,7 @@ function renderProducts() {
     orderedCategories.forEach((category) => {
       const productsInCategory = (state.products || []).filter((product) => (product.category || '') === category);
       if (!productsInCategory.length) return;
-      rows.push(`<tr class="products-category-divider"><td colspan="5"><strong>${escapeHtml(category)}</strong></td></tr>`);
+      rows.push(`<tr class="products-category-divider"><td colspan="6"><strong>${escapeHtml(category)}</strong></td></tr>`);
       productsInCategory.forEach((p, index) => {
         const currentCategory = p.category || 'Sin categoría';
         const st = getImageUploadStatus('product', p.id);
@@ -3790,7 +3844,7 @@ function renderProducts() {
         const retry = renderImageRetryHint('product', p.id, p.imageUrl || p.imageDataUrl);
         const upDisabled = index === 0 ? 'disabled' : '';
         const downDisabled = index === productsInCategory.length - 1 ? 'disabled' : '';
-        rows.push(`<tr><td>${escapeHtml(currentCategory)}</td><td>${escapeHtml(p.name || '')}${p.hidden ? ' <span class="muted">(Oculto)</span>' : ''}</td><td>${money(p.price)}</td><td><button class="secondary" data-prod-up="${p.id}" type="button" ${upDisabled}>↑</button> <button class="secondary" data-prod-down="${p.id}" type="button" ${downDisabled}>↓</button> <button class="secondary" data-prod-edit="${p.id}" type="button">Editar</button> <button class="secondary" data-prod-img="${p.id}" type="button" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> <button class="secondary" data-prod-hide="${p.id}" type="button">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class="secondary" data-prod-del="${p.id}" type="button">Eliminar</button></td><td>${imageBlock}${renderImageUploadProgress('product', p.id)}${err}${retry}</td></tr>`);
+        rows.push(`<tr><td>${escapeHtml(currentCategory)}</td><td>${escapeHtml(p.name || '')}${p.hidden ? ' <span class="muted">(Oculto)</span>' : ''}</td><td>${money(Number(p.cost || 0))}</td><td>${money(p.price)}</td><td><button class="secondary" data-prod-up="${p.id}" type="button" ${upDisabled}>↑</button> <button class="secondary" data-prod-down="${p.id}" type="button" ${downDisabled}>↓</button> <button class="secondary" data-prod-edit="${p.id}" type="button">Editar</button> <button class="secondary" data-prod-img="${p.id}" type="button" ${st?.uploading ? 'disabled' : ''}>${uploadBtnText}</button> <button class="secondary" data-prod-hide="${p.id}" type="button">${p.hidden ? 'Mostrar' : 'Ocultar'}</button> <button class="secondary" data-prod-del="${p.id}" type="button">Eliminar</button></td><td>${imageBlock}${renderImageUploadProgress('product', p.id)}${err}${retry}</td></tr>`);
       });
     });
     productsTable.innerHTML = rows.join('');
@@ -3945,11 +3999,21 @@ function renderSoldProductsList() {
   const map = new Map();
   list.forEach((sale) => (sale.items || []).forEach((it) => {
     const key = it.name;
-    map.set(key, (map.get(key) || 0) + Number(it.qty || 0));
+    if (!map.has(key)) map.set(key, { qty: 0, cost: 0, total: 0 });
+    const row = map.get(key);
+    const qty = Number(it.qty || 0);
+    const total = Number(it.finalSubtotal ?? (it.price * it.qty) ?? 0);
+    const cost = Math.max(0, Number((it.cost ?? state.products.find((p) => p.id === it.id)?.cost ?? 0))) * qty;
+    row.qty += qty;
+    row.cost += cost;
+    row.total += total;
   }));
   soldProductsTable.innerHTML = map.size
-    ? [...map.entries()].map(([name, qty]) => `<tr><td>${name}</td><td>${qty}</td></tr>`).join('')
-    : '<tr><td colspan="2">Sin ventas en la caja actual.</td></tr>';
+    ? [...map.entries()].map(([name, row]) => {
+      const profit = row.total - row.cost;
+      return `<tr><td>${name}</td><td>${row.qty}</td><td>${money(row.cost)}</td><td>${money(profit)}</td><td>${money(row.total)}</td></tr>`;
+    }).join('')
+    : '<tr><td colspan="5">Sin ventas en la caja actual.</td></tr>';
 }
 
 function escapeHtml(value) {
@@ -4388,7 +4452,7 @@ function openSaleEditModal(sale) {
             if (component) component.stockCurrent = Number(component.stockCurrent || 0) - Number(neededQty || 0);
           });
         }
-        sale.items.push({ id: p.id, name: p.name, qty, price: p.price, discountPct: 0, finalSubtotal: p.price * qty });
+        sale.items.push({ id: p.id, name: p.name, qty, cost: Number(p.cost || 0), price: p.price, discountPct: 0, finalSubtotal: p.price * qty });
       }
     }
     sale.total = sale.items.reduce((a, i) => a + Number(i.finalSubtotal ?? (i.price * i.qty)), 0);
@@ -4502,7 +4566,17 @@ function openDebtPaymentModal({ saleIds = [], debtorId = '' } = {}) {
     renderDebtPayments();
     overlay.remove();
     try {
-      await syncToCloud({ modules: ['operations'], reason: 'debt-payment' });
+      await commitCriticalCloudWrites(async (includeToken) => {
+        for (const sale of targets) {
+          if (!sale?.id) continue;
+          await cloudWritePath(`operations/sales/${encodeURIComponent(String(sale.id))}`, sale, { includeToken, method: 'PUT' });
+        }
+        for (const payment of result.createdPayments) {
+          if (!payment?.id) continue;
+          await cloudWritePath(`operations/debtPayments/${encodeURIComponent(String(payment.id))}`, payment, { includeToken, method: 'PUT' });
+        }
+        await cloudWritePath('operations/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+      }, { reason: 'debt-payment', saleIds: targets.map((s) => s.id), paymentIds: result.createdPayments.map((p) => p.id) });
       await pullFromCloud({ force: true, modules: ['operations'], reason: 'debt-payment-verify' });
       const salesOk = [...pendingDebtSaleIds].every((saleId) => {
         const sale = (state.sales || []).find((s) => s.id === saleId);
@@ -4919,10 +4993,12 @@ async function syncToCloud(options = {}) {
           const mergedSales = mergeByIdLatest(remoteModule?.sales, localModule?.sales, state.deletedRecordIds?.sales);
           const mergedOutflows = mergeByIdLatest(remoteModule?.outflows, localModule?.outflows);
           const mergedDebt = mergeByIdLatest(remoteModule?.debtPayments, localModule?.debtPayments);
+          const mergedWriteOffs = mergeByIdLatest(remoteModule?.stockWriteOffs, localModule?.stockWriteOffs);
           const mergedCashState = mergeCashOperationsState(remoteModule, localModule);
           payload.sales = collectionToObjectById(mergedSales);
           payload.outflows = collectionToObjectById(mergedOutflows);
           payload.debtPayments = collectionToObjectById(mergedDebt);
+          payload.stockWriteOffs = collectionToObjectById(mergedWriteOffs);
           Object.assign(payload, mergedCashState);
         } else if (moduleName === 'warehouse') {
           const mergedComponents = mergeByIdLatest(remoteModule?.components, localModule?.components);
@@ -5309,6 +5385,7 @@ async function closeCashSession() {
     const dayOutflows = (state.outflows || []).filter((move) => move.cashBoxId === currentCashBoxId);
     const dayDebtPayments = activeDebtPayments().filter((pay) => pay.cashBoxId === currentCashBoxId);
     const dayDeletedSales = (state.deletedSales || []).filter((sale) => sale.cashBoxId === currentCashBoxId);
+    const dayStockWriteOffs = (state.stockWriteOffs || []).filter((row) => row.cashBoxId === currentCashBoxId);
 
     const totalsByMethod = daySales.reduce((acc, sale) => {
       const method = sale.payment || 'desconocido';
@@ -5349,7 +5426,8 @@ async function closeCashSession() {
       salesSnapshot: daySales.map((sale) => ({ ...sale })),
       deletedSalesSnapshot: dayDeletedSales.map((sale) => ({ ...sale })),
       outflowsSnapshot: dayOutflows.map((move) => ({ ...move })),
-      debtPaymentsSnapshot: dayDebtPayments.map((pay) => ({ ...pay }))
+      debtPaymentsSnapshot: dayDebtPayments.map((pay) => ({ ...pay })),
+      stockWriteOffsSnapshot: dayStockWriteOffs.map((row) => ({ ...row }))
     };
     state.cashClosings.unshift(closing);
 
@@ -5633,7 +5711,7 @@ function openQueuedOrdersModal() {
 function renderStockPage() {
   if (!stockPageTable) return;
   if (stockPageProductSelect) stockPageProductSelect.innerHTML = (state.products || []).map((p) => `<option value=\"${p.id}\">${p.name}</option>`).join('');
-  stockPageTable.innerHTML = (state.products || []).map((p) => `<tr><td>${p.name}</td><td>${Number(p.stockCurrent || 0)}</td><td><button class="secondary" data-stock-clear="${p.id}" type="button">Vaciar stock</button></td></tr>`).join('');
+  stockPageTable.innerHTML = (state.products || []).map((p) => `<tr><td>${p.name}</td><td>${Number(p.stockCurrent || 0)}</td><td><button class="secondary" data-stock-writeoff="${p.id}" type="button">Dar de baja</button> <button class="secondary" data-stock-clear="${p.id}" type="button">Vaciar stock</button></td></tr>`).join('');
 }
 
 function showStockPage() {
@@ -5650,6 +5728,56 @@ function showStockPage() {
   stockScreen?.classList.remove('hidden');
   if (stockPageStatus) stockPageStatus.textContent = `Stock activo · mínimo ${appConfig.stockMinimo}`;
   renderStockPage();
+}
+
+function openStockWriteOffModal(product) {
+  if (!product) return;
+  document.getElementById('stockWriteOffOverlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'stockWriteOffOverlay';
+  overlay.className = 'modal';
+  overlay.innerHTML = `<div class="modal-card"><h3>Dar de baja: ${escapeHtml(product.name || 'Producto')}</h3><div class="grid2"><label>Cantidad<input id="stockWriteOffQty" type="number" min="1" step="1" value="1" /></label><label>Motivo<input id="stockWriteOffReason" type="text" placeholder="Describe el motivo" /></label></div><div class="grid2"><button id="stockWriteOffCancelBtn" class="secondary" type="button">Cancelar</button><button id="stockWriteOffConfirmBtn" class="primary" type="button">Finalizar</button></div></div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('stockWriteOffCancelBtn')?.addEventListener('click', () => overlay.remove());
+  document.getElementById('stockWriteOffConfirmBtn')?.addEventListener('click', () => {
+    const qty = Math.max(1, Number(document.getElementById('stockWriteOffQty')?.value || 0));
+    const reason = String(document.getElementById('stockWriteOffReason')?.value || '').trim();
+    if (!reason) return alert('Debes registrar el motivo de la baja.');
+    if (qty > Number(product.stockCurrent || 0)) return alert('La cantidad a dar de baja supera el stock disponible.');
+    product.stockCurrent = Number(product.stockCurrent || 0) - qty;
+    state.stockWriteOffs = Array.isArray(state.stockWriteOffs) ? state.stockWriteOffs : [];
+    state.stockWriteOffs.unshift({
+      id: uid(),
+      productId: product.id,
+      productName: product.name || 'Producto',
+      qty,
+      reason,
+      cost: Number(product.cost || 0),
+      cashBoxId: state.activeCashBoxId || '',
+      createdAt: new Date().toISOString(),
+      user: state.currentUser?.username || '-'
+    });
+    markModulesDirty(['catalog', 'operations'], 'stock-writeoff-local');
+    persist({ sync: false });
+    renderProducts();
+    renderSaleSelectors();
+    renderStockPage();
+    overlay.remove();
+    Promise.resolve().then(async () => {
+      const latest = state.stockWriteOffs[0];
+      if (!latest?.id) return;
+      await commitCriticalCloudWrites(async (includeToken) => {
+        await cloudWritePath(`operations/stockWriteOffs/${encodeURIComponent(String(latest.id))}`, latest, { includeToken, method: 'PUT' });
+        await cloudWritePath(`catalog/products/${encodeURIComponent(String(product.id))}`, product, { includeToken, method: 'PUT' });
+        await cloudWritePath('operations/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+        await cloudWritePath('catalog/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+      }, { reason: 'stock-writeoff', productId: product.id, writeOffId: latest.id });
+      await pullFromCloud({ force: true, modules: ['operations', 'catalog'], reason: 'stock-writeoff-verify' });
+    }).catch((err) => {
+      console.error('[stock][writeoff-sync] error', err);
+      alert('La baja de stock se aplicó localmente, pero falló la sincronización en la nube.');
+    });
+  });
 }
 
 function showWarehousePage() {
@@ -6130,7 +6258,7 @@ function openComboCreatorModal() {
     if (!name || price <= 0 || !state.comboBuilderItems.length) { alert('Completa nombre, precio y productos del combo.'); return; }
     if (!state.categories.includes('Combos')) state.categories.push('Combos');
     const ids = state.comboBuilderItems.flatMap((x) => Array.from({ length: x.qty }).map(() => x.id));
-    state.products.push({ id: uid(), category: 'Combos', name, price, hidden: false, combo: ids });
+    state.products.push({ id: uid(), category: 'Combos', name, cost: 0, price, hidden: false, combo: ids });
     state.comboBuilderItems = [];
     persist();
     renderProducts();
@@ -6147,7 +6275,7 @@ function openProductEditModal(productId) {
   const overlay = document.createElement('div');
   overlay.id = 'editProductOverlay';
   overlay.className = 'modal';
-  overlay.innerHTML = `<div class="modal-card"><h3>Editar producto</h3><div class="grid3"><label>Categoría<select id="editProdCategory">${(state.categories || []).map((c) => `<option value="${c}">${c}</option>`).join('')}</select></label><label>Producto<input id="editProdName" type="text" value="${p.name}" /></label><label>Precio<input id="editProdPrice" type="number" min="0.01" step="0.01" value="${Number(p.price || 0).toFixed(2)}" /></label></div><div class="grid2"><button id="saveEditProdBtn" class="primary" type="button">Guardar</button><button id="cancelEditProdBtn" class="secondary" type="button">Cancelar</button></div></div>`;
+  overlay.innerHTML = `<div class="modal-card"><h3>Editar producto</h3><div class="grid4"><label>Categoría<select id="editProdCategory">${(state.categories || []).map((c) => `<option value="${c}">${c}</option>`).join('')}</select></label><label>Producto<input id="editProdName" type="text" value="${p.name}" /></label><label>Costo<input id="editProdCost" type="number" min="0" step="0.01" value="${Number(p.cost || 0).toFixed(2)}" /></label><label>Precio<input id="editProdPrice" type="number" min="0.01" step="0.01" value="${Number(p.price || 0).toFixed(2)}" /></label></div><div class="grid2"><button id="saveEditProdBtn" class="primary" type="button">Guardar</button><button id="cancelEditProdBtn" class="secondary" type="button">Cancelar</button></div></div>`;
   document.body.appendChild(overlay);
   const cat = document.getElementById('editProdCategory');
   if (cat) cat.value = p.category || 'Todos';
@@ -6155,10 +6283,12 @@ function openProductEditModal(productId) {
   document.getElementById('saveEditProdBtn')?.addEventListener('click', () => {
     const name = document.getElementById('editProdName')?.value?.trim() || '';
     const category = document.getElementById('editProdCategory')?.value || 'Todos';
+    const cost = Math.max(0, Number(document.getElementById('editProdCost')?.value || 0));
     const price = Number(document.getElementById('editProdPrice')?.value || 0);
     if (!name || price <= 0) return;
     p.name = name;
     p.category = category;
+    p.cost = cost;
     p.price = price;
     if (!state.categories.includes(category)) state.categories.push(category);
     persist();
@@ -6351,10 +6481,12 @@ function wireEvents() {
     e.preventDefault();
     const category = productCategory?.value || '';
     const name = productName?.value?.trim() || '';
+    const cost = Math.max(0, Number(productCost?.value || 0));
     const price = Number(productPrice?.value || 0);
     if (!category || !name || price <= 0) return;
-    state.products.push({ id: uid(), category, name, price, hidden: false });
+    state.products.push({ id: uid(), category, name, cost, price, hidden: false });
     if (productName) productName.value = '';
+    if (productCost) productCost.value = '';
     if (productPrice) productPrice.value = '';
     persist();
     renderProducts();
@@ -6377,7 +6509,7 @@ function wireEvents() {
     const ids = state.comboBuilderItems.length ? state.comboBuilderItems.map((p) => p.id) : (state.comboDraft.length ? state.comboDraft.map((p) => p.id) : Array.from(comboProductsSelect?.selectedOptions || []).map((o) => o.value));
     if (!name || price <= 0 || !ids.length) return;
     if (!state.categories.includes('Combos')) state.categories.push('Combos');
-    state.products.push({ id: uid(), category: 'Combos', name, price, hidden: false, combo: ids });
+    state.products.push({ id: uid(), category: 'Combos', name, cost: 0, price, hidden: false, combo: ids });
     state.comboBuilderItems = [];
     if (comboItemsTable) comboItemsTable.innerHTML = '';
     if (comboNameInput) comboNameInput.value = '';
@@ -6533,7 +6665,10 @@ function wireEvents() {
     persist({ sync: false });
     refreshFinancialViews();
     try {
-      await syncToCloud({ modules: ['operations'], reason: 'outflow-create' });
+      await commitCriticalCloudWrites(async (includeToken) => {
+        await cloudWritePath(`operations/outflows/${encodeURIComponent(String(movement.id))}`, movement, { includeToken, method: 'PUT' });
+        await cloudWritePath('operations/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+      }, { reason: 'outflow-create', movementId: movement.id });
       await pullFromCloud({ force: true, modules: ['operations'], reason: 'outflow-create-verify' });
       const exists = (state.outflows || []).some((move) => move?.id === movement.id);
       if (!exists) throw new Error('Movimiento no encontrado tras verificación remota.');
@@ -6708,7 +6843,33 @@ function wireEvents() {
       refreshFinancialViews();
       renderWarehouse();
       try {
-        await syncToCloud({ modules: ['catalog', 'operations'], includeHistory: true, reason: 'sale-annul' });
+        const relatedAnnulledPayments = (state.debtPayments || []).filter((pay) => pay?.saleId === sale.id && pay?.anulado);
+        await commitCriticalCloudWrites(async (includeToken) => {
+          await cloudWritePath(`operations/sales/${encodeURIComponent(String(sale.id))}`, sale, { includeToken, method: 'PUT' });
+          for (const pay of relatedAnnulledPayments) {
+            if (!pay?.id) continue;
+            await cloudWritePath(`operations/debtPayments/${encodeURIComponent(String(pay.id))}`, pay, { includeToken, method: 'PUT' });
+          }
+          await cloudWritePath(`history/deletedSales/${encodeURIComponent(String(deletedSnapshot.id))}`, deletedSnapshot, { includeToken, method: 'PUT' });
+          if (isStockEnabled()) {
+            const touchedProducts = {};
+            (sale.items || []).forEach((item) => {
+              const product = (state.products || []).find((p) => String(p?.id || '') === String(item?.id || ''));
+              if (!product?.id) return;
+              touchedProducts[String(product.id)] = { ...product };
+              (product.combo || []).forEach((comboId) => {
+                const component = (state.products || []).find((p) => String(p?.id || '') === String(comboId || ''));
+                if (component?.id) touchedProducts[String(component.id)] = { ...component };
+              });
+            });
+            if (Object.keys(touchedProducts).length) {
+              await cloudWritePath('catalog/products', touchedProducts, { includeToken, method: 'PATCH' });
+              await cloudWritePath('catalog/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+            }
+          }
+          await cloudWritePath('operations/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+          await cloudWritePath('history/updatedAt', Date.now(), { includeToken, method: 'PUT' });
+        }, { reason: 'sale-annul', saleId: sale.id, deletedSnapshotId: deletedSnapshot.id });
         await pullFromCloud({ force: true, modules: ['catalog', 'operations', 'history'], includeHistory: true, reason: 'sale-annul-verify' });
         const verified = (() => {
           const saleAfter = (state.sales || []).find((s) => s.id === sale.id);
@@ -6871,6 +7032,12 @@ function wireEvents() {
   });
 
   stockPageTable?.addEventListener('click', (e) => {
+    const lowBtn = e.target.closest('button[data-stock-writeoff]');
+    if (lowBtn) {
+      const product = state.products.find((p) => p.id === lowBtn.dataset.stockWriteoff);
+      if (product) openStockWriteOffModal(product);
+      return;
+    }
     const b = e.target.closest('button[data-stock-clear]');
     if (!b) return;
     const product = state.products.find((p) => p.id === b.dataset.stockClear);
