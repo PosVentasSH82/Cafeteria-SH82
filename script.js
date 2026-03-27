@@ -1776,6 +1776,14 @@ function nextProductSortOrderForCategory(category = '') {
   return Math.max(...list.map((p) => Number(p.sortOrder || 0)), 0) + 1;
 }
 
+function restoreDeletedCategory(category = '') {
+  const key = String(category || '').trim();
+  if (!key) return;
+  state.deletedRecordIds = state.deletedRecordIds || { cashClosings: [], sales: [], products: [], categories: [] };
+  if (!Array.isArray(state.deletedRecordIds.categories)) state.deletedRecordIds.categories = [];
+  state.deletedRecordIds.categories = state.deletedRecordIds.categories.filter((item) => String(item || '').trim() !== key);
+}
+
 function isProductStockTracked(product) {
   return isStockEnabled() && product?.stockEnabled !== false;
 }
@@ -3711,7 +3719,7 @@ function importProductsFromExcelFile(file) {
         const key = normalizeProductName(productName);
         const found = existingMap.get(key);
         if (!found) {
-          state.products.push({ id: uid(), name: productName, category, cost, price, hidden: false });
+          state.products.push({ id: uid(), name: productName, category, cost, price, hidden: false, sortOrder: nextProductSortOrderForCategory(category) });
           existingMap.set(key, state.products[state.products.length - 1]);
           created += 1;
         } else {
@@ -3719,11 +3727,13 @@ function importProductsFromExcelFile(file) {
           found.category = category;
           found.cost = cost;
           found.price = price;
+          if (!Number.isFinite(Number(found.sortOrder))) found.sortOrder = nextProductSortOrderForCategory(category);
           updated += 1;
         }
+        restoreDeletedCategory(category);
         if (!state.categories.includes(category)) state.categories.push(category);
       });
-      persist();
+      persist({ includeHistory: true });
       renderProducts();
       renderSaleSelectors();
       alert(`Importación finalizada.\nCreados: ${created}\nActualizados: ${updated}\nErrores: ${errors.length}${errors.length ? `\n\n${errors.join('\n')}` : ''}`);
@@ -6663,9 +6673,10 @@ function wireEvents() {
   addCategoryBtn?.addEventListener('click', () => {
     const cat = newCategoryInput?.value?.trim() || '';
     if (!cat || state.categories.includes(cat)) return;
+    restoreDeletedCategory(cat);
     state.categories.push(cat);
     if (newCategoryInput) newCategoryInput.value = '';
-    persist();
+    persist({ includeHistory: true });
     renderProducts();
     renderSaleSelectors();
     renderTouchSaleUi();
@@ -6675,6 +6686,7 @@ function wireEvents() {
     const price = Number(comboPriceInput?.value || 0);
     const ids = state.comboBuilderItems.length ? state.comboBuilderItems.map((p) => p.id) : (state.comboDraft.length ? state.comboDraft.map((p) => p.id) : Array.from(comboProductsSelect?.selectedOptions || []).map((o) => o.value));
     if (!name || price <= 0 || !ids.length) return;
+    restoreDeletedCategory('Combos');
     if (!state.categories.includes('Combos')) state.categories.push('Combos');
     state.products.push({ id: uid(), category: 'Combos', name, cost: 0, price, hidden: false, combo: ids, sortOrder: nextProductSortOrderForCategory('Combos') });
     state.comboBuilderItems = [];
