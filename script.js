@@ -1765,8 +1765,14 @@ function ensureSeedData() {
 
 
 function ensureProductStockDefaults() {
-  state.products = (state.products || []).map((p) => ({ ...p, stockCurrent: Number(p.stockCurrent || 0), cost: Math.max(0, Number(p.cost || 0)), stockMin: Math.max(0, Number((p.stockMin ?? appConfig.stockMinimo ?? 0))), stockEnabled: p.stockEnabled !== false }));
+  state.products = (state.products || []).map((p, index) => ({ ...p, stockCurrent: Number(p.stockCurrent || 0), cost: Math.max(0, Number(p.cost || 0)), stockMin: Math.max(0, Number((p.stockMin ?? appConfig.stockMinimo ?? 0))), stockEnabled: p.stockEnabled !== false, sortOrder: Number.isFinite(Number(p.sortOrder)) ? Number(p.sortOrder) : index }));
   state.stockWriteOffs = Array.isArray(state.stockWriteOffs) ? state.stockWriteOffs : [];
+}
+
+function nextProductSortOrderForCategory(category = '') {
+  const list = (state.products || []).filter((p) => String(p.category || '') === String(category || ''));
+  if (!list.length) return 1;
+  return Math.max(...list.map((p) => Number(p.sortOrder || 0)), 0) + 1;
 }
 
 function isProductStockTracked(product) {
@@ -2848,9 +2854,7 @@ function buildStatsFromSelectedClosings() {
     salesCount: 0,
     totalIncome: 0,
     cash: 0,
-    transfer: 0,
     qr: 0,
-    others: 0,
     debtPending: 0,
     cost: 0,
     profit: 0,
@@ -2858,16 +2862,15 @@ function buildStatsFromSelectedClosings() {
     productsTotalQty: 0,
     productsMap: new Map(),
     usersMap: new Map(),
-    pendingDebtorsMap: new Map()
+    pendingDebtorsMap: new Map(),
+    byClosing: []
   };
   selected.forEach((c) => {
     const agg = getClosingAggregates(c);
     stats.salesCount += Number(c.salesCount || agg.sales.length || 0);
     stats.totalIncome += agg.net;
     stats.cash += agg.cash;
-    stats.transfer += agg.transfer;
     stats.qr += agg.qr;
-    stats.others += agg.others;
     stats.cost += Number(agg.totalCost || 0);
     stats.profit += Number(agg.totalProfit || 0);
     stats.expenses += agg.outTotal;
@@ -2892,29 +2895,35 @@ function buildStatsFromSelectedClosings() {
     const ur = stats.usersMap.get(user);
     ur.closings += 1;
     ur.total += agg.net;
+    stats.byClosing.push({
+      closingId: c.id,
+      closedAt: c.closedAt || c.fecha_cierre || '',
+      salesCount: Number(c.salesCount || agg.sales.length || 0),
+      qtyTotal: Number(agg.qtyTotal || 0),
+      income: Number(agg.net || 0),
+      profit: Number(agg.totalProfit || 0)
+    });
   });
   stats.avgTicket = stats.salesCount ? stats.totalIncome / stats.salesCount : 0;
   stats.products = [...stats.productsMap.entries()].map(([name,row])=>({name,...row}));
   stats.productsTopQty = stats.products.slice().sort((a,b)=>b.qty-a.qty)[0] || null;
   stats.productsTopAmount = stats.products.slice().sort((a,b)=>b.total-a.total)[0] || null;
-  stats.top5 = stats.products.slice().sort((a,b)=>b.qty-a.qty).slice(0,5);
+  stats.productsAll = stats.products.slice().sort((a, b) => b.qty - a.qty || b.total - a.total || String(a.name).localeCompare(String(b.name), 'es'));
   stats.users = [...stats.usersMap.entries()].map(([user,row])=>({user,...row}));
   stats.pendingDebtors = [...stats.pendingDebtorsMap.values()].sort((a, b) => b.pending - a.pending);
   const payTotal = Math.max(1, stats.totalIncome);
   stats.paymentPct = {
     cash: (stats.cash / payTotal) * 100,
-    transfer: (stats.transfer / payTotal) * 100,
-    qr: (stats.qr / payTotal) * 100,
-    others: (stats.others / payTotal) * 100
+    qr: (stats.qr / payTotal) * 100
   };
-  stats.mostUsedMethod = Object.entries({Efectivo:stats.cash,Transferencia:stats.transfer,QR:stats.qr,Otros:stats.others}).sort((a,b)=>b[1]-a[1])[0]?.[0] || '-';
+  stats.mostUsedMethod = Object.entries({ Efectivo: stats.cash, QR: stats.qr }).sort((a,b)=>b[1]-a[1])[0]?.[0] || '-';
   return stats;
 }
 
 function renderClosingsStatsOutput(stats) {
   const out = document.getElementById('closingsStatsOutput');
   if (!out) return;
-  out.innerHTML = `<div class="card"><h4>Resumen general</h4><p>Total ventas: ${stats.salesCount}</p><p>Total ingresos: ${money(stats.totalIncome)}</p><p>Total costo: ${money(stats.cost)}</p><p>Total ganancia: ${money(stats.profit)}</p><p>Total efectivo: ${money(stats.cash)}</p><p>Total transferencias: ${money(stats.transfer)}</p><p>Total QR: ${money(stats.qr)}</p><p>Total deuda pendiente: ${money(stats.debtPending)}</p><p>Total gastos: ${money(stats.expenses)}</p><p>Ticket promedio global: ${money(stats.avgTicket)}</p><p>Total productos vendidos: ${stats.productsTotalQty}</p><p>Total productos distintos vendidos: ${stats.products.length}</p><p>Cierres seleccionados: ${stats.count}</p></div><div class="card"><h4>Productos</h4><p>Producto más vendido: ${stats.productsTopQty ? `${stats.productsTopQty.name} (${stats.productsTopQty.qty})` : '-'}</p><p>Producto que más dinero generó: ${stats.productsTopAmount ? `${stats.productsTopAmount.name} (${money(stats.productsTopAmount.total)})` : '-'}</p><table><thead><tr><th>Top 5 productos</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${stats.top5.map((p)=>`<tr><td>${p.name}</td><td>${p.qty}</td><td>${money(p.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Métodos de pago</h4><p>Efectivo: ${money(stats.cash)} (${stats.paymentPct.cash.toFixed(1)}%)</p><p>Transferencia: ${money(stats.transfer)} (${stats.paymentPct.transfer.toFixed(1)}%)</p><p>QR: ${money(stats.qr)} (${stats.paymentPct.qr.toFixed(1)}%)</p><p>Otros: ${money(stats.others)} (${stats.paymentPct.others.toFixed(1)}%)</p><p>Método más utilizado: ${stats.mostUsedMethod}</p></div><div class="card"><h4>Personas con deuda pendiente</h4><table><thead><tr><th>Persona</th><th>Pendiente</th></tr></thead><tbody>${stats.pendingDebtors.map((d)=>`<tr><td>${d.name}</td><td>${money(d.pending)}</td></tr>`).join('') || '<tr><td colspan="2">Sin deudas pendientes.</td></tr>'}</tbody></table></div><div class="card"><h4>Usuarios</h4><table><thead><tr><th>Usuario</th><th>Cierres</th><th>Total generado</th></tr></thead><tbody>${stats.users.map((u)=>`<tr><td>${u.user}</td><td>${u.closings}</td><td>${money(u.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Estadísticas gráficas comparativas</h4><canvas id="closingsIncomeChart" width="760" height="220"></canvas><canvas id="closingsProductsChart" width="760" height="220"></canvas></div>`;
+  out.innerHTML = `<div class="card"><h4>Resumen general</h4><p>Total ventas: ${stats.salesCount}</p><p>Total ingresos: ${money(stats.totalIncome)}</p><p>Total costo: ${money(stats.cost)}</p><p>Total ganancia: ${money(stats.profit)}</p><p>Total efectivo: ${money(stats.cash)}</p><p>Total QR: ${money(stats.qr)}</p><p>Total deuda pendiente: ${money(stats.debtPending)}</p><p>Total gastos: ${money(stats.expenses)}</p><p>Ticket promedio global: ${money(stats.avgTicket)}</p><p>Total productos vendidos: ${stats.productsTotalQty}</p><p>Total productos distintos vendidos: ${stats.products.length}</p><p>Cierres seleccionados: ${stats.count}</p></div><div class="card"><h4>Productos vendidos (todos)</h4><p>Producto más vendido: ${stats.productsTopQty ? `${stats.productsTopQty.name} (${stats.productsTopQty.qty})` : '-'}</p><p>Producto que más dinero generó: ${stats.productsTopAmount ? `${stats.productsTopAmount.name} (${money(stats.productsTopAmount.total)})` : '-'}</p><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Total</th></tr></thead><tbody>${(stats.productsAll || []).map((p)=>`<tr><td>${p.name}</td><td>${p.qty}</td><td>${money(p.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Métodos de pago</h4><p>Efectivo: ${money(stats.cash)} (${stats.paymentPct.cash.toFixed(1)}%)</p><p>QR: ${money(stats.qr)} (${stats.paymentPct.qr.toFixed(1)}%)</p><p>Método más utilizado: ${stats.mostUsedMethod}</p></div><div class="card"><h4>Ingresos y ganancias por cierre</h4><table><thead><tr><th>Cierre</th><th>Fecha</th><th>Ventas</th><th>Ganancia</th><th>Cant. ventas</th><th>Cant. productos</th></tr></thead><tbody>${(stats.byClosing || []).sort((a, b) => new Date(a.closedAt || 0) - new Date(b.closedAt || 0)).map((row, idx) => `<tr><td>C${idx + 1}</td><td>${new Date(row.closedAt || Date.now()).toLocaleString()}</td><td>${money(row.income)}</td><td>${money(row.profit)}</td><td>${row.salesCount}</td><td>${row.qtyTotal}</td></tr>`).join('') || '<tr><td colspan="6">Sin datos.</td></tr>'}</tbody></table></div><div class="card"><h4>Personas con deuda pendiente</h4><table><thead><tr><th>Persona</th><th>Pendiente</th></tr></thead><tbody>${stats.pendingDebtors.map((d)=>`<tr><td>${d.name}</td><td>${money(d.pending)}</td></tr>`).join('') || '<tr><td colspan="2">Sin deudas pendientes.</td></tr>'}</tbody></table></div><div class="card"><h4>Usuarios</h4><table><thead><tr><th>Usuario</th><th>Cierres</th><th>Total generado</th></tr></thead><tbody>${stats.users.map((u)=>`<tr><td>${u.user}</td><td>${u.closings}</td><td>${money(u.total)}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos</td></tr>'}</tbody></table></div><div class="card"><h4>Estadísticas gráficas comparativas</h4><canvas id="closingsIncomeChart" width="760" height="220"></canvas><canvas id="closingsProductsChart" width="760" height="220"></canvas></div>`;
   const drawBars = (canvasId, labels, values, color='#1f7a5c') => {
     const cv = document.getElementById(canvasId);
     if (!cv || !cv.getContext) return;
@@ -2938,7 +2947,7 @@ function renderClosingsStatsOutput(stats) {
   };
   const closings = (stats.selected || []).slice().sort((a, b) => new Date(a.closedAt) - new Date(b.closedAt));
   drawBars('closingsIncomeChart', closings.map((c, i) => `C${i + 1}`), closings.map((c) => Number(c.cashIn || 0) + Number(c.qrIn || 0)), '#1570ef');
-  drawBars('closingsProductsChart', (stats.top5 || []).map((p) => p.name), (stats.top5 || []).map((p) => Number(p.qty || 0)), '#1f7a5c');
+  drawBars('closingsProductsChart', (stats.productsAll || []).slice(0, 20).map((p) => p.name), (stats.productsAll || []).slice(0, 20).map((p) => Number(p.qty || 0)), '#1f7a5c');
 }
 
 async function downloadClosingsStatsPdf() {
@@ -2959,15 +2968,27 @@ async function downloadClosingsStatsPdf() {
     doc.autoTable({ startY: 38, head: [['Resumen general', 'Valor']], body: [
       ['Total ventas', String(st.salesCount)], ['Total ingresos', money(st.totalIncome)], ['Total costo', money(st.cost || 0)], ['Total ganancia', money(st.profit || 0)], ['Total efectivo', money(st.cash)], ['Total QR', money(st.qr)], ['Total deuda pendiente', money(st.debtPending || 0)], ['Total gastos', money(st.expenses)], ['Ticket promedio global', money(st.avgTicket)], ['Total productos vendidos', String(st.productsTotalQty)], ['Productos distintos vendidos', String(st.products?.length || 0)]
     ] });
-    doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['Producto', 'Cantidad', 'Total']], body: st.top5.map((p)=>[p.name,String(p.qty),money(p.total)]) });
+    doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['Producto', 'Cantidad', 'Total']], body: (st.productsAll || []).map((p)=>[p.name,String(p.qty),money(p.total)]) });
     doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['Método de pago', 'Monto']], body: [
       ['Efectivo', `${money(st.cash)} (${st.paymentPct.cash.toFixed(1)}%)`],
-      ['QR', `${money(st.qr)} (${st.paymentPct.qr.toFixed(1)}%)`],
-      ['Otros', `${money(st.others)} (${st.paymentPct.others.toFixed(1)}%)`]
+      ['QR', `${money(st.qr)} (${st.paymentPct.qr.toFixed(1)}%)`]
     ]});
+    doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['Cierre', 'Fecha', 'Ventas', 'Ganancia', 'Cant. ventas', 'Cant. productos']], body: (st.byClosing || []).map((row, idx) => [`C${idx + 1}`, new Date(row.closedAt || Date.now()).toLocaleString(), money(row.income), money(row.profit), String(row.salesCount), String(row.qtyTotal)]) });
     doc.addPage();
     doc.autoTable({ startY: 12, head: [['Usuario', 'Cierres', 'Total generado']], body: st.users.map((u)=>[u.user,String(u.closings),money(u.total)]) });
     doc.autoTable({ startY: doc.lastAutoTable.finalY + 4, head: [['Persona deudora', 'Pendiente']], body: (st.pendingDebtors || []).map((d) => [d.name, money(d.pending)]) });
+    const incomeCanvas = document.getElementById('closingsIncomeChart');
+    const productsCanvas = document.getElementById('closingsProductsChart');
+    if (incomeCanvas?.toDataURL) {
+      doc.addPage();
+      doc.setFontSize(12);
+      doc.text('Gráfica comparativa de ingresos por cierre', 14, 12);
+      doc.addImage(incomeCanvas.toDataURL('image/png'), 'PNG', 14, 16, 180, 60);
+      if (productsCanvas?.toDataURL) {
+        doc.text('Gráfica comparativa de productos vendidos', 14, 86);
+        doc.addImage(productsCanvas.toDataURL('image/png'), 'PNG', 14, 90, 180, 60);
+      }
+    }
     doc.save('estadisticas_cierres_seleccionados.pdf');
   } catch (error) {
     console.error('[pdf] stats', error);
@@ -3058,7 +3079,9 @@ function renderClosingDetails(closingId) {
     return acc;
   }, { cash: 0, qr: 0, debt: 0 });
   const closingWriteOffs = Array.isArray(closing.stockWriteOffsSnapshot) ? closing.stockWriteOffsSnapshot : [];
-  if (closingSummaryText) closingSummaryText.innerHTML = `<div class="card"><h4>SECCIÓN 1 – INFORMACIÓN GENERAL</h4><p>Número de cierre: ${String(closing.id || '-').slice(-8)}</p><p>Fecha de apertura: ${openAt.toLocaleDateString()}</p><p>Hora de apertura: ${openAt.toLocaleTimeString()}</p><p>Fecha de cierre: ${closeAt.toLocaleDateString()}</p><p>Hora de cierre: ${closeAt.toLocaleTimeString()}</p><p>Usuario que abrió: ${closing.usuario_apertura || '-'}</p><p>Usuario que cerró: ${closing.usuario_cierre || '-'}</p><p>Tiempo total de caja abierta: ${formatDurationMs(closeAt - openAt)}</p></div><div class="card"><h4>SECCIÓN 2 – RESUMEN FINANCIERO</h4><p>Inicio de caja: ${money(openingCash)}</p><p>Total ventas brutas: ${money(grossSales)}</p><p>Pagos de deuda cobrados: ${money(debtCollected)}</p><p>Total descuentos: ${money(totalDiscounts)}</p><p>Total ingresos netos: ${money((grossSales - totalDiscounts) + debtCollected)}</p><p>Total en efectivo: ${money(totalCash)}</p><p>Total QR: ${money(totalQr)}</p><p>Total salidas externas efectivo: ${money(outCash)}</p><p>Total salidas externas QR: ${money(outQr)}</p><p>Total entradas externas efectivo: ${money(inCash)}</p><p>Total entradas externas QR: ${money(inQr)}</p><p>Total efectivo final: ${money(totalCashFinal)}</p><p>Total QR final: ${money(totalQrFinal)}</p><p>Valor total en caja (incluye valor de caja): ${money(totalInBox)}</p><p>Valor efectivo real de venta entregado: ${money(realDelivered)}</p></div><div class="card"><h4>HISTORIAL DE VENTAS DE CIERRE</h4><table><thead><tr><th>Fecha</th><th>Nro pedido</th><th>Método</th><th>Efectivo</th><th>QR</th><th>Deuda</th><th>Total</th><th>Usuario</th><th>Estado</th></tr></thead><tbody>${historyRowsDetailed}</tbody><tfoot><tr><th colspan="3">Totales (sin anuladas)</th><th>${money(totalsHistory.cash)}</th><th>${money(totalsHistory.qr)}</th><th>${money(totalsHistory.debt)}</th><th colspan="3"></th></tr></tfoot></table></div><div class="card"><h4>Productos vendidos (costos y ganancias)</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Costo</th><th>Ganancia</th><th>Total</th></tr></thead><tbody>${agg.products.length ? agg.products.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.cost || 0)}</td><td>${money(row.profit || 0)}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos vendidos.</td></tr>'}</tbody><tfoot><tr><th colspan="2">Totales</th><th>${money(agg.totalCost || 0)}</th><th>${money(agg.totalProfit || 0)}</th><th>${money(agg.totalRevenue || 0)}</th></tr></tfoot></table></div><div class="card"><h4>SECCIÓN 3 – MÉTRICAS OPERATIVAS</h4><p>Cantidad total de ventas: ${closing.salesCount || sales.length}</p><p>Total productos vendidos: ${agg.qtyTotal}</p><p>Ticket promedio: ${money(agg.avgTicket)}</p><p>Venta más alta: ${money(agg.saleMax)}</p><p>Venta más baja: ${money(agg.saleMin)}</p><p>Ventas eliminadas: ${deletedCount} · Mov. caja: ${outflowCount} · Pagos deuda: ${debtPaymentsCount}</p></div><div class="card"><h4>Productos dados de baja</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Motivo</th><th>Usuario</th><th>Fecha</th></tr></thead><tbody>${closingWriteOffs.length ? closingWriteOffs.map((row) => `<tr><td>${escapeHtml(row.productName || '-')}</td><td>${Number(row.qty || 0)}</td><td>${escapeHtml(row.reason || '-')}</td><td>${escapeHtml(row.user || '-')}</td><td>${new Date(row.createdAt || closing.closedAt).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos dados de baja.</td></tr>'}</tbody></table></div><div class="card"><h4>Pagos de deuda</h4><table><thead><tr><th>Fecha pago</th><th>Persona</th><th>Detalle compra</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${debtPayments.map((p) => { const sale = saleRecordForPayment(p); const person = state.people.find((x) => x.id === p.debtorId); return `<tr><td>${new Date(p.paidAt).toLocaleString()}</td><td>${personFullName(person) || '-'}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${p.method || '-'}</td><td>${money(p.amount || 0)}</td><td>${p.paidBy || '-'}</td></tr>`; }).join('') || '<tr><td colspan="6">Sin pagos de deuda.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de entradas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${entries.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin entradas.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de salidas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${exits.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin salidas.</td></tr>'}</tbody></table></div>`;
+  const openingUser = closing.usuario_apertura || state.cashBoxes.find((box) => box.id === closing.cashBoxId)?.usuario_apertura || '-';
+  const closingUser = closing.usuario_cierre || state.cashBoxes.find((box) => box.id === closing.cashBoxId)?.usuario_cierre || '-';
+  if (closingSummaryText) closingSummaryText.innerHTML = `<div class="card"><h4>SECCIÓN 1 – INFORMACIÓN GENERAL</h4><p>Número de cierre: ${String(closing.id || '-').slice(-8)}</p><p>Fecha de apertura: ${openAt.toLocaleDateString()}</p><p>Hora de apertura: ${openAt.toLocaleTimeString()}</p><p>Fecha de cierre: ${closeAt.toLocaleDateString()}</p><p>Hora de cierre: ${closeAt.toLocaleTimeString()}</p><p>Usuario que abrió: ${openingUser}</p><p>Usuario que cerró: ${closingUser}</p><p>Tiempo total de caja abierta: ${formatDurationMs(closeAt - openAt)}</p></div><div class="card"><h4>SECCIÓN 2 – RESUMEN FINANCIERO</h4><p>Inicio de caja: ${money(openingCash)}</p><p>Total ventas brutas: ${money(grossSales)}</p><p>Pagos de deuda cobrados: ${money(debtCollected)}</p><p>Total descuentos: ${money(totalDiscounts)}</p><p>Total ingresos netos: ${money((grossSales - totalDiscounts) + debtCollected)}</p><p>Total en efectivo: ${money(totalCash)}</p><p>Total QR: ${money(totalQr)}</p><p>Total salidas externas efectivo: ${money(outCash)}</p><p>Total salidas externas QR: ${money(outQr)}</p><p>Total entradas externas efectivo: ${money(inCash)}</p><p>Total entradas externas QR: ${money(inQr)}</p><p>Total efectivo final: ${money(totalCashFinal)}</p><p>Total QR final: ${money(totalQrFinal)}</p><p>Valor total en caja (incluye valor de caja): ${money(totalInBox)}</p><p>Valor efectivo real de venta entregado: ${money(realDelivered)}</p></div><div class="card"><h4>HISTORIAL DE VENTAS DE CIERRE</h4><table><thead><tr><th>Fecha</th><th>Nro pedido</th><th>Método</th><th>Efectivo</th><th>QR</th><th>Deuda</th><th>Total</th><th>Usuario</th><th>Estado</th></tr></thead><tbody>${historyRowsDetailed}</tbody><tfoot><tr><th colspan="3">Totales (sin anuladas)</th><th>${money(totalsHistory.cash)}</th><th>${money(totalsHistory.qr)}</th><th>${money(totalsHistory.debt)}</th><th colspan="3"></th></tr></tfoot></table></div><div class="card"><h4>Productos vendidos (costos y ganancias)</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Costo</th><th>Ganancia</th><th>Total</th></tr></thead><tbody>${agg.products.length ? agg.products.map((row) => `<tr><td>${row.name}</td><td>${row.qty}</td><td>${money(row.cost || 0)}</td><td>${money(row.profit || 0)}</td><td>${money(row.total)}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos vendidos.</td></tr>'}</tbody><tfoot><tr><th colspan="2">Totales</th><th>${money(agg.totalCost || 0)}</th><th>${money(agg.totalProfit || 0)}</th><th>${money(agg.totalRevenue || 0)}</th></tr></tfoot></table></div><div class="card"><h4>SECCIÓN 3 – MÉTRICAS OPERATIVAS</h4><p>Cantidad total de ventas: ${closing.salesCount || sales.length}</p><p>Total productos vendidos: ${agg.qtyTotal}</p><p>Ticket promedio: ${money(agg.avgTicket)}</p><p>Venta más alta: ${money(agg.saleMax)}</p><p>Venta más baja: ${money(agg.saleMin)}</p><p>Ventas eliminadas: ${deletedCount} · Mov. caja: ${outflowCount} · Pagos deuda: ${debtPaymentsCount}</p></div><div class="card"><h4>Productos dados de baja</h4><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Motivo</th><th>Usuario</th><th>Fecha</th></tr></thead><tbody>${closingWriteOffs.length ? closingWriteOffs.map((row) => `<tr><td>${escapeHtml(row.productName || '-')}</td><td>${Number(row.qty || 0)}</td><td>${escapeHtml(row.reason || '-')}</td><td>${escapeHtml(row.user || '-')}</td><td>${new Date(row.createdAt || closing.closedAt).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="5">Sin productos dados de baja.</td></tr>'}</tbody></table></div><div class="card"><h4>Pagos de deuda</h4><table><thead><tr><th>Fecha pago</th><th>Persona</th><th>Detalle compra</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${debtPayments.map((p) => { const sale = saleRecordForPayment(p); const person = state.people.find((x) => x.id === p.debtorId); return `<tr><td>${new Date(p.paidAt).toLocaleString()}</td><td>${personFullName(person) || '-'}</td><td>${sale?.items?.map((i) => `${i.name} x${i.qty}`).join(', ') || '-'}</td><td>${p.method || '-'}</td><td>${money(p.amount || 0)}</td><td>${p.paidBy || '-'}</td></tr>`; }).join('') || '<tr><td colspan="6">Sin pagos de deuda.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de entradas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${entries.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin entradas.</td></tr>'}</tbody></table></div><div class="card"><h4>Detalle de salidas</h4><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Método</th><th>Monto</th><th>Usuario</th></tr></thead><tbody>${exits.map((m) => `<tr><td>${new Date(m.createdAt).toLocaleString()}</td><td>${m.description || '-'}</td><td>${m.method || '-'}</td><td>${money(m.amount || 0)}</td><td>${m.user || '-'}</td></tr>`).join('') || '<tr><td colspan="5">Sin salidas.</td></tr>'}</tbody></table></div>`;
   if (closingSalesTable) closingSalesTable.innerHTML = sales.length ? sales.map((sale) => `<tr><td>${new Date(sale.createdAt).toLocaleString()}</td><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${sale.payment}</td><td>${money(sale.total)}</td><td>${sale.user}</td></tr>`).join('') : '<tr><td colspan="5">Sin ventas.</td></tr>';
   if (closingProductsTable) {
     const aggProducts = agg.products;
@@ -3841,28 +3864,28 @@ function moveCategory(categoryName = '', direction = 0) {
 }
 
 function reorderProductsWithinCategory(products = [], productId = '', direction = 0) {
-  const list = Array.isArray(products) ? products.slice() : [];
-  const index = list.findIndex((product) => product?.id === productId);
-  if (index < 0) return list;
-  const category = list[index]?.category || '';
+  const list = Array.isArray(products) ? products.map((p, idx) => ({ ...p, sortOrder: Number.isFinite(Number(p?.sortOrder)) ? Number(p.sortOrder) : idx })) : [];
+  const current = list.find((product) => product?.id === productId);
+  if (!current) return list;
+  const category = current?.category || '';
   const siblings = list
-    .map((product, idx) => ({ product, idx }))
-    .filter(({ product }) => (product?.category || '') === category);
-  const siblingIndex = siblings.findIndex(({ product }) => product?.id === productId);
+    .filter((product) => (product?.category || '') === category)
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  const siblingIndex = siblings.findIndex((product) => product?.id === productId);
   const targetSiblingIndex = siblingIndex + Number(direction || 0);
   if (siblingIndex < 0 || targetSiblingIndex < 0 || targetSiblingIndex >= siblings.length) return list;
-  const sourceIndex = siblings[siblingIndex].idx;
-  const targetIndex = siblings[targetSiblingIndex].idx;
-  const temp = list[sourceIndex];
-  list[sourceIndex] = list[targetIndex];
-  list[targetIndex] = temp;
+  const target = siblings[targetSiblingIndex];
+  const currentOrder = Number(current.sortOrder || 0);
+  const targetOrder = Number(target.sortOrder || 0);
+  current.sortOrder = targetOrder;
+  target.sortOrder = currentOrder;
   return list;
 }
 
 function moveProductWithinCategory(productId = '', direction = 0) {
   const nextProducts = reorderProductsWithinCategory(state.products || [], productId, direction);
-  const changed = nextProducts.some((product, index) => product?.id !== state.products?.[index]?.id);
-  if (changed) state.products = nextProducts;
+  const changed = nextProducts.some((product, index) => Number(product?.sortOrder || 0) !== Number(state.products?.[index]?.sortOrder || 0));
+  if (changed) state.products = nextProducts.map((product) => ({ ...product, modifiedAt: Date.now() }));
   return changed;
 }
 
@@ -3876,7 +3899,9 @@ function renderProducts() {
   if (productsTable) {
     const rows = [];
     orderedCategories.forEach((category) => {
-      const productsInCategory = (state.products || []).filter((product) => (product.category || '') === category);
+      const productsInCategory = (state.products || [])
+        .filter((product) => (product.category || '') === category)
+        .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
       if (!productsInCategory.length) return;
       rows.push(`<tr class="products-category-divider"><td colspan="6"><strong>${escapeHtml(category)}</strong></td></tr>`);
       productsInCategory.forEach((p, index) => {
@@ -4083,7 +4108,12 @@ function renderDailySalesSummaryToggle() {
   body.innerHTML = `<table><thead><tr><th>Nro pedido</th><th>Fecha</th><th>Monto</th><th>Efectivo</th><th>QR</th><th>Deudas</th><th>Estado</th></tr></thead><tbody>${rows.length ? rows.map((sale) => {
     const isAnnulled = isSaleAnnulled(sale) || sale.saleStatus === 'ANULADA';
     const status = isAnnulled ? 'ANULADA' : 'OK';
-    return `<tr><td>${orderNumberLabel(sale.orderNumber)}</td><td>${new Date(sale.createdAt || Date.now()).toLocaleString()}</td><td>${money(sale.total || 0)}</td><td>${money(sale.breakdown?.cash || 0)}</td><td>${money(sale.breakdown?.qr || 0)}</td><td>${money(sale.debtAmount || 0)}</td><td>${status}</td></tr>`;
+    const style = isAnnulled ? 'color:#c1121f;font-weight:700;' : '';
+    const total = isAnnulled ? 0 : Number(sale.total || 0);
+    const cash = isAnnulled ? 0 : Number(sale.breakdown?.cash || 0);
+    const qr = isAnnulled ? 0 : Number(sale.breakdown?.qr || 0);
+    const debt = isAnnulled ? 0 : Number(sale.debtAmount || 0);
+    return `<tr style="${style}"><td>${orderNumberLabel(sale.orderNumber)}</td><td>${new Date(sale.createdAt || Date.now()).toLocaleString()}</td><td>${money(total)}</td><td>${money(cash)}</td><td>${money(qr)}</td><td>${money(debt)}</td><td>${status}</td></tr>`;
   }).join('') : '<tr><td colspan="7">Sin ventas registradas en la caja actual.</td></tr>'}</tbody><tfoot><tr><th colspan="3">Totales (sin anuladas)</th><th>${money(totals.cash)}</th><th>${money(totals.qr)}</th><th>${money(totals.debt)}</th><th></th></tr></tfoot></table><div style="margin-top:.6rem;"><button id="hideDailySalesBtn" class="secondary" type="button">Ocultar</button></div>`;
   body.querySelector('#hideDailySalesBtn')?.addEventListener('click', () => {
     summaryDailySalesVisible = false;
@@ -4451,6 +4481,8 @@ async function openSaleInvoiceWindow(sale, options = {}) {
 
 function renderSalesHistory() {
   if (!salesTable) return;
+  const salesHead = salesTable.closest('table')?.querySelector('thead tr');
+  if (salesHead) salesHead.innerHTML = '<th>Número de pedido</th><th>Fecha</th><th>Monto</th><th>Método de pago</th><th>Efectivo</th><th>QR</th><th>Deudas</th><th>Estado</th><th>Acción</th><th>Usuario</th>';
   const userFilter = salesUserFilter?.value || '';
   const users = ['<option value="">Todos los usuarios</option>'].concat(state.users.map((u) => `<option value="${u.username}">${u.username}</option>`));
   if (salesUserFilter) {
@@ -4470,14 +4502,25 @@ function renderSalesHistory() {
   if (userFilter) list = list.filter((s) => s.user === userFilter);
   if (searchOrder) list = list.filter((s) => String(s.orderNumber || '').includes(searchOrder));
   list.sort((a, b) => new Date(b.createdAt || b.deletedAt || 0) - new Date(a.createdAt || a.deletedAt || 0));
+  const totals = list.reduce((acc, sale) => {
+    if (sale.saleStatus === 'ANULADA' || isSaleAnnulled(sale)) return acc;
+    acc.total += Number(sale.total || 0);
+    acc.cash += Number(sale.breakdown?.cash || 0);
+    acc.qr += Number(sale.breakdown?.qr || 0);
+    acc.debt += Number(sale.debtAmount || 0);
+    return acc;
+  }, { total: 0, cash: 0, qr: 0, debt: 0 });
   salesTable.innerHTML = list.length ? list.map((sale) => {
     const isAnnulled = sale.saleStatus === 'ANULADA';
     const actions = isAnnulled
       ? `<span class="muted">Venta anulada${sale.deletedBy ? ` · anulada por ${escapeHtml(sale.deletedBy)}` : ''}</span>`
       : `<button type="button" class="secondary" data-sale-act="view" data-sale-id="${sale.id}">Ver Venta</button> <button type="button" class="secondary" data-sale-act="invoice" data-sale-id="${sale.id}">Ver factura</button>${hasPermission('deleteSales') ? ` <button type="button" class="secondary" data-sale-act="edit" data-sale-id="${sale.id}">Editar venta</button> <button type="button" class="secondary" data-sale-act="del" data-sale-id="${sale.id}">Anular venta</button>` : ''}`;
     const statusCell = isAnnulled ? `ANULADA${sale.deletedBy ? `<br><small>anulada por: ${escapeHtml(sale.deletedBy)}</small>` : ''}` : sale.saleStatus;
-    return `<tr style="${isAnnulled ? 'color:#c1121f;font-weight:700;' : ''}"><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${new Date(sale.createdAt || sale.deletedAt).toLocaleString()}</td><td>${money(sale.total)}</td><td>${sale.payment}</td><td style="${isAnnulled ? 'color:#c1121f;font-weight:700;' : ''}">${statusCell}</td><td>${actions}</td><td>${sale.user}</td></tr>`;
-  }).join('') : '<tr><td colspan="7">Sin ventas.</td></tr>';
+    const cash = Number(sale.breakdown?.cash || 0);
+    const qr = Number(sale.breakdown?.qr || 0);
+    const debt = Number(sale.debtAmount || 0);
+    return `<tr style="${isAnnulled ? 'color:#c1121f;font-weight:700;' : ''}"><td>#${orderNumberLabel(sale.orderNumber)}</td><td>${new Date(sale.createdAt || sale.deletedAt).toLocaleString()}</td><td>${money(sale.total)}</td><td>${sale.payment}</td><td>${money(cash)}</td><td>${money(qr)}</td><td>${money(debt)}</td><td style="${isAnnulled ? 'color:#c1121f;font-weight:700;' : ''}">${statusCell}</td><td>${actions}</td><td>${sale.user}</td></tr>`;
+  }).join('') + `<tr><th colspan="2">Totales (sin anuladas)</th><th>${money(totals.total)}</th><th></th><th>${money(totals.cash)}</th><th>${money(totals.qr)}</th><th>${money(totals.debt)}</th><th colspan="3"></th></tr>` : '<tr><td colspan="10">Sin ventas.</td></tr>';
   refreshPendingSyncButtons();
 }
 
@@ -5514,6 +5557,8 @@ async function closeCashSession() {
       cashBoxId: refreshedActiveCash.id,
       openedAt: refreshedActiveCash.fecha_apertura,
       closedAt: refreshedActiveCash.fecha_cierre,
+      usuario_apertura: refreshedActiveCash.usuario_apertura || state.currentUser?.username || '-',
+      usuario_cierre: refreshedActiveCash.usuario_cierre || state.currentUser?.username || '-',
       openingCash: Number(refreshedActiveCash.openingCash || 0),
       cashIn,
       qrIn,
@@ -6602,7 +6647,7 @@ function wireEvents() {
     const cost = Math.max(0, Number(productCost?.value || 0));
     const price = Number(productPrice?.value || 0);
     if (!category || !name || price <= 0) return;
-    state.products.push({ id: uid(), category, name, cost, price, hidden: false });
+    state.products.push({ id: uid(), category, name, cost, price, hidden: false, sortOrder: nextProductSortOrderForCategory(category) });
     if (productName) productName.value = '';
     if (productCost) productCost.value = '';
     if (productPrice) productPrice.value = '';
@@ -6627,7 +6672,7 @@ function wireEvents() {
     const ids = state.comboBuilderItems.length ? state.comboBuilderItems.map((p) => p.id) : (state.comboDraft.length ? state.comboDraft.map((p) => p.id) : Array.from(comboProductsSelect?.selectedOptions || []).map((o) => o.value));
     if (!name || price <= 0 || !ids.length) return;
     if (!state.categories.includes('Combos')) state.categories.push('Combos');
-    state.products.push({ id: uid(), category: 'Combos', name, cost: 0, price, hidden: false, combo: ids });
+    state.products.push({ id: uid(), category: 'Combos', name, cost: 0, price, hidden: false, combo: ids, sortOrder: nextProductSortOrderForCategory('Combos') });
     state.comboBuilderItems = [];
     if (comboItemsTable) comboItemsTable.innerHTML = '';
     if (comboNameInput) comboNameInput.value = '';
