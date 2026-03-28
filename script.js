@@ -7269,7 +7269,7 @@ function wireEvents() {
     state.activeDebtorId = '';
   });
 
-  cashClosingsTable?.addEventListener('click', (e) => {
+  cashClosingsTable?.addEventListener('click', async (e) => {
     const del = e.target.closest('button[data-closing-del]');
     if (del && hasPermission('deleteClosings')) {
       const removedId = del.dataset.closingDel;
@@ -7277,8 +7277,15 @@ function wireEvents() {
       state.deletedRecordIds = state.deletedRecordIds || { cashClosings: [], sales: [] };
       if (!Array.isArray(state.deletedRecordIds.cashClosings)) state.deletedRecordIds.cashClosings = [];
       if (!state.deletedRecordIds.cashClosings.includes(removedId)) state.deletedRecordIds.cashClosings.push(removedId);
-      persist();
+      markModulesDirty(['history'], 'closing-delete-local');
+      persist({ includeHistory: true, sync: false });
       renderCashClosings();
+      try {
+        await syncToCloud({ modules: ['history'], includeHistory: true, reason: 'closing-delete' });
+        await pullFromCloud({ force: true, modules: ['history'], includeHistory: true, reason: 'closing-delete-verify' });
+      } catch (err) {
+        console.error('[closing][delete] sync error', err);
+      }
       return;
     }
     const pdf = e.target.closest('button[data-closing-pdf]');
