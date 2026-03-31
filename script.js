@@ -5191,12 +5191,21 @@ async function syncToCloud(options = {}) {
         const path = CLOUD_MODULE_PATHS[moduleName];
         if (!path) continue;
         let remoteModule = {};
+        let remoteReadFailed = false;
         try {
           remoteModule = await cloudReadPath(path, { includeToken }) || {};
         } catch (err) {
           if (includeToken && [401, 403].includes(Number(err?.status || 0))) throw err;
+          remoteReadFailed = true;
+          console.warn('[sync][guard] lectura remota falló, se bloquea escritura por seguridad', {
+            moduleName,
+            path,
+            status: Number(err?.status || 0) || null,
+            message: err?.message || 'read-failed'
+          });
           remoteModule = {};
         }
+        if (remoteReadFailed) continue;
         const localModule = localModules[moduleName] || {};
         let payload = { ...localModule };
         if (moduleName === 'catalog') {
